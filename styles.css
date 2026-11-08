@@ -14,6 +14,7 @@
   --positive: #0f6b5c;
   --series-income: #2a78d6;
   --series-expense: #eb6834;
+  --series-savings: #129179;
   --bar: #2a78d6;
   --grid: #ebe9e3;
   --c1: #2a78d6; --c2: #eb6834; --c3: #1baf7a; --c4: #eda100; --c5: #e87ba4; --c6: #008300;
@@ -36,6 +37,7 @@
     --positive: #5cc4ae;
     --series-income: #3987e5;
     --series-expense: #d95926;
+    --series-savings: #3aa893;
     --bar: #3987e5;
     --grid: #2b2a28;
     --c1: #3987e5; --c2: #d95926; --c3: #199e70; --c4: #c98500; --c5: #d55181; --c6: #008300;
@@ -133,7 +135,21 @@ body.dragging .drop-veil { display: grid; }
 .tx-controls select.kind { flex: 0 1 130px; }
 .not-counted { flex: 1 1 170px; }
 .tx-controls select.missing { border-color: var(--flag); background: var(--flag-soft); }
-.tx-controls .del { margin-left: auto; color: var(--danger); }
+.tx-controls .del { color: var(--danger); }
+.tx-controls .push { margin-left: auto; }
+.tx-controls .del:not(.push ~ .del) { margin-left: auto; }
+.tx-amt { text-align: right; }
+.tx-amt .edit-desc { display: block; margin-left: auto; }
+.amt-edit { display: flex; gap: 6px; align-items: center; flex-shrink: 0; }
+.amt-edit input { width: 100px; text-align: right; }
+dialog:has(.split-list) { width: min(720px, calc(100vw - 32px)); }
+.split-list { display: flex; flex-direction: column; gap: 12px; max-height: 50vh; overflow-y: auto; padding: 2px; }
+.split-part { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)) 110px auto; gap: 8px; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
+.split-desc { grid-column: span 2; }
+.split-amount { text-align: right; }
+.split-part select { grid-column: span 2; min-width: 0; }
+.split-summary { font-weight: 600; margin: 0; }
+.split-summary.over { color: var(--danger); }
 .chip { color: var(--flag); font-size: .85rem; font-weight: 600; white-space: nowrap; }
 .empty { padding: 22px; text-align: center; }
 
@@ -161,7 +177,20 @@ body.dragging .drop-veil { display: grid; }
 .bar-row.static { cursor: default; }
 .bar-row:not(.static):hover { background: var(--accent-soft); }
 .bar-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.bar-track { grid-column: 1 / -1; display: block; height: 8px; }
+.bar-track { grid-column: 1 / -1; display: block; height: 8px; position: relative; }
+.bar-over { position: absolute; top: 0; height: 100%; background: var(--flag); border-radius: 0 4px 4px 0; }
+.bar-target { position: absolute; top: -3px; bottom: -3px; width: 2px; background: var(--ink); }
+.bar-note { grid-column: 1 / -1; font-size: .8rem; color: var(--ink-2); }
+.bar-note.over { color: var(--flag); font-weight: 600; }
+.savings-total { margin: 0 0 10px; }
+.savings-total b { font-size: 1.4rem; font-variant-numeric: tabular-nums; }
+.savings-card .bar-row { margin-top: 6px; }
+.card-head { margin-bottom: 8px; }
+.card-head h2 { margin: 0; }
+.budget-list { display: flex; flex-direction: column; gap: 6px; max-height: 52vh; overflow-y: auto; padding-right: 4px; }
+.budget-row { display: grid; grid-template-columns: minmax(0, 1fr) auto 104px; gap: 10px; align-items: center; }
+.budget-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.budget-row input { width: 100%; text-align: right; }
 .bar-fill { display: block; height: 100%; min-width: 2px; background: var(--bar); border-radius: 0 4px 4px 0; }
 .bar-value { text-align: right; font-weight: 600; white-space: nowrap; }
 .bar-pct { font-weight: 400; margin-left: 8px; font-size: .84rem; }
@@ -228,6 +257,9 @@ dialog h2 { margin: 0; }
   .dash-left, .dash-right { display: contents; }
   .o-1 { order: 1; } .o-2 { order: 2; } .o-3 { order: 3; } .o-4 { order: 4; } .o-5 { order: 5; } .o-6 { order: 6; } .o-7 { order: 7; }
   .dash-full { order: 8; }
+  .split-part { grid-template-columns: minmax(0, 1fr) auto; }
+  .split-desc, .split-part select { grid-column: 1 / -1; }
+  .tx-head { flex-wrap: wrap; }
   .filters { grid-template-columns: 1fr 1fr; }
   .filters input { grid-column: 1 / -1; }
   .grid2 { grid-template-columns: 1fr; }
@@ -235,3 +267,8 @@ dialog h2 { margin: 0; }
   .tx-controls select.kind { flex: 1 1 100%; }
   .savebar { flex-wrap: wrap; }
 }
+
+/* Dark ink reads on every fill except the dark-mode gray, which needs light text. */
+.seg-label { font-size: 11px; font-weight: 600; fill: #141413; pointer-events: none; }
+.seg-label.tiny { font-size: 9px; }
+@media (prefers-color-scheme: dark) { .seg-label.neutral { fill: #fff; } }

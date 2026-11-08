@@ -3,8 +3,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
 import { readExport, parseAmount, parseDate, dateOrder, parseCsv, looksFlipped, guessMapping, normalizeRows } from '../js/parse.js';
-import { classifyAll, learn, suggest, merchantKey, DEFAULT_CATEGORIES as CATS } from '../js/classify.js';
-import { periodSummary, yearMatrix, previousMonth, missingCards, monthChoices, monthSeries, categoryStack, spendingPace, topBy } from '../js/report.js';
+import { classifyAll, learn, suggest, merchantKey, applyAmount, buildSplit, merchantOf, DEFAULT_CATEGORIES as CATS } from '../js/classify.js';
+import { periodSummary, yearMatrix, previousMonth, missingCards, monthChoices, monthSeries, categoryStack, spendingPace, topBy, typicalMonthly, budgetSummary, monthlySavings } from '../js/report.js';
 
 const CHECKING = `Transaction Date,Transaction Description,Amount,Category
 2026-10-30,CHASE CREDIT CRD AUTOPAY ACH DEBIT xxxxxxxxxxx0001,- $100.5,Credit Card Payments
@@ -65,7 +65,7 @@ test('cash back is income for you to confirm, not a payment or spending', () => 
   assert.equal(cash.kind, 'income');
   assert.equal(cash.sub, 'Cash back');
   assert.equal(cash.needsReview, true);
-  assert.equal(food.sub, 'DiningOut');
+  assert.equal(food.sub, 'Restaurants');
   assert.equal(food.needsReview, true);
 });
 
@@ -172,7 +172,7 @@ test('merchant names ignore store numbers and reference codes', () => {
   assert.equal(merchantKey('COSTCO GAS #0649'), 'COSTCO GAS');
   assert.equal(merchantKey('AMAZON MKTPL*H25XO65P3'), 'AMAZON MKTPL');
   assert.equal(merchantKey("RITA'S # 247"), 'RITAS');
-  assert.equal(merchantKey('LIBERTY MUTUAL PAYMENT ACH DEBIT AOVxxxxxxx0795'), 'LIBERTY MUTUAL PAYMENT');
+  assert.equal(merchantKey('SAMPLE INSURER PAYMENT ACH DEBIT AOVxxxxxxx0000'), 'SAMPLE INSURER PAYMENT');
 });
 
 test('learning: history suggests, and a manual change beats history', () => {
@@ -284,6 +284,94 @@ test('top lists rank spending and skip anything netted to zero or below', () => 
   assert.equal(topBy(rows, '2026-10', r => r.desc, 1).length, 1);
 });
 
+test('typical amount is the middle month, so one big bill does not skew it', () => {
+  const rows = ['01', '02', '03'].map((m, i) => ({ date: `2026-${m}-05`, kind: 'expense', cents: [10000, 12000, 90000][i], cat: 'Auto' }));
+  rows.push({ date: '2026-01-06', kind: 'income', cents: -50000, cat: 'Income' }, { date: '2026-02-06', kind: 'income', cents: -70000, cat: 'Income' });
+  const t = typicalMonthly(rows);
+  assert.equal(t.categories.Auto, 12000);
+  assert.equal(t.income, 50000);
+});
+
+test('budget totals: only budgeted categories count, and unspent budgets are included', () => {
+  const cats = [{ name: 'Food', cents: 12000 }, { name: 'Fun', cents: 9000 }, { name: 'Other', cents: 5000 }];
+  assert.deepEqual(budgetSummary(cats, { Food: 10000, Fun: 20000, Travel: 3000 }), { budgeted: 33000, spent: 21000, left: 12000, overCount: 1 });
+  assert.deepEqual(budgetSummary(cats, { Food: 10000 }, 3), { budgeted: 30000, spent: 12000, left: 18000, overCount: 0 });
+  assert.equal(budgetSummary(cats, {}).budgeted, 0);
+});
+
+test('savings are not spending, and still count as saved', () => {
+  const rows = [
+    { date: '2026-10-02', kind: 'expense', cents: 1000, cat: 'Food', sub: 'A', account: 'X', desc: 'SHOP' },
+    { date: '2026-10-03', kind: 'savings', cents: 300, cat: 'Savings', sub: 'India Remittance', account: 'X', desc: 'SEND' },
+    { date: '2026-10-05', kind: 'income', cents: -5000, cat: 'Income', sub: 'Salary', account: 'X', desc: 'PAY' },
+  ];
+  const s = periodSummary(rows, '2026-10');
+  assert.equal(s.spent, 1000);
+  assert.equal(s.setAside, 300);
+  assert.equal(s.saved, 4000);
+  assert.deepEqual(s.categories.map(c => c.name), ['Food']);
+  assert.deepEqual(monthSeries(rows, ['2026-10']).expense, [1000]);
+  assert.equal(yearMatrix(rows, '2026', { Food: [], Savings: [] }).spent, 1000);
+});
+
+test('an edited amount remembers the original, and typing it back clears that', () => {
+  const row = { id: 'bank|1', cents: 2000 };
+  applyAmount(row, 2500);
+  assert.deepEqual(row, { id: 'bank|1', cents: 2500, origCents: 2000 });
+  applyAmount(row, 3000);
+  assert.equal(row.origCents, 2000);
+  applyAmount(row, 2000);
+  assert.deepEqual(row, { id: 'bank|1', cents: 2000 });
+  const manual = { id: 'Manual|x', cents: 100 };
+  applyAmount(manual, 200);
+  assert.equal(manual.origCents, undefined);
+});
+
+test('split parts keep the original row and still group under the merchant', () => {
+  const parent = { id: 'bank|1', desc: 'SAMPLE LANDLORD WEB PMTS', cents: 10000, kind: 'expense', cat: 'Housing', sub: 'Rent', account: 'PNC', date: '2026-08-02' };
+  const parts = buildSplit(parent, [
+    { desc: 'SAMPLE LANDLORD WEB PMTS', cents: 9000, cat: 'Housing', sub: 'Rent' },
+    { desc: 'Water bill', cents: 1000, cat: 'Housing', sub: 'Water' },
+  ]);
+  assert.deepEqual(parts.map(p => p.id), ['bank|1|split|1', 'bank|1|split|2']);
+  assert.deepEqual(parts.map(p => p.cents), [9000, 1000]);
+  assert.equal(parts[1].account, 'PNC');
+  assert.equal(parts[1].date, '2026-08-02');
+  assert.equal(parts[0].origDesc, undefined);
+  assert.equal(parts[1].origDesc, 'SAMPLE LANDLORD WEB PMTS');
+  assert.equal(merchantOf(parts[1]), 'SAMPLE LANDLORD');
+  assert.equal(parts[1].splitOf, 'bank|1');
+  assert.equal(parts[1].splitParent.cents, 10000);
+  assert.equal(parts[1].splitParent.splitParent, undefined);
+  const again = buildSplit(parts[0].splitParent, [{ desc: 'A', cents: 10000, cat: 'X', sub: 'Y' }]);
+  assert.equal(again[0].splitParent.cents, 10000);
+});
+
+test('savings add up by month and by subcategory', () => {
+  const rows = [
+    { date: '2026-01-06', kind: 'savings', cents: 100, sub: 'India Remittance', desc: 'A' },
+    { date: '2026-03-06', kind: 'savings', cents: 250, sub: 'India Remittance', desc: 'B' },
+    { date: '2026-03-07', kind: 'savings', cents: 50, sub: 'Emergency', desc: 'C' },
+    { date: '2026-03-08', kind: 'expense', cents: 999, sub: 'Food', desc: 'D' },
+  ];
+  assert.deepEqual(monthlySavings(rows, ['2026-01', '2026-02', '2026-03']), [100, 0, 300]);
+  assert.deepEqual(topBy(rows, '2026', r => r.sub, 8, 'savings'), [{ name: 'India Remittance', cents: 350 }, { name: 'Emergency', cents: 50 }]);
+  assert.deepEqual(topBy(rows, '2026-03', r => r.sub), [{ name: 'Food', cents: 999 }]);
+});
+
+test('savings need a subcategory, and a merchant moved to savings stays there', () => {
+  const pending = { kind: 'savings', cat: 'Savings', sub: '' };
+  const done = { kind: 'savings', cat: 'Savings', sub: 'India Remittance' };
+  const rules = {};
+  learn(rules, { desc: 'RIAMONEYTRANSFER CUST TRANS ACH WEB US1', kind: 'expense', cat: 'Remittances', sub: 'RiaTransfer' });
+  learn(rules, { id: 'a', desc: 'RIAMONEYTRANSFER CUST TRANS ACH WEB US1', ...done }, { manual: true });
+  const [r] = classifyAll([{ desc: 'RIAMONEYTRANSFER CUST TRANS ACH WEB US9', cents: 99999, accountType: 'checking' }], rules, CATS);
+  assert.equal(r.kind, 'savings');
+  assert.equal(r.sub, 'India Remittance');
+  assert.equal(r.needsReview, false);
+  assert.equal(classifyAll([{ desc: 'X', cents: 1, accountType: 'card' }], { X: { key: 'X', votes: {}, manual: pending } }, CATS)[0].needsReview, true);
+});
+
 test('month choices include months with no data', () => {
   const months = monthChoices([{ date: '2026-03-05' }], '2026-11-08');
   assert.equal(months[0], '2026-11');
@@ -320,4 +408,81 @@ test('report totals exclude transfers and keep years apart', () => {
   assert.equal(y.table[0].months[9], 750);
   assert.equal(y.spent, 750);
   assert.equal(previousMonth('2026-01'), '2025-12');
+});
+
+test('category upgrade moves rows, learned merchants and budgets to the new names', async () => {
+  const { migrateData } = await import('../js/migrate.js');
+  const row = (id, desc, cat, sub, extra = {}) => ({ id, desc, kind: 'expense', cat, sub, cents: 100, ...extra });
+  const out = migrateData({
+    tx: [
+      row('a', 'SAMPLE BURGER', 'Dining', 'DiningOut'),
+      row('b', 'WENDYS 1', 'Dining', 'DiningOut'),
+      row('c', 'DENTAQUEST', 'Insurance', 'Health/DentalInsurance'),
+      row('d', 'SAMPLE HEALTH PLAN', 'Insurance', 'Health/DentalInsurance'),
+      row('e', 'SAMPLE TIRES', 'Automobile', 'Service/Maintenance'),
+      row('f', 'SUNOCO', 'Automobile', 'Fuel'),
+      row('g', 'MY OWN', 'Hobbies', 'Knitting'),
+      row('h', 'split part', 'Family', 'Consumables', { splitParent: row('p', 'WHOLE', 'Family', 'Storage') }),
+      { id: 'i', desc: 'ACME PAYROLL ACH CREDIT', kind: 'income', cat: 'Income', sub: 'Other', cents: -100 },
+      { id: 'j', desc: 'REFUND CHECK', kind: 'income', cat: 'Income', sub: 'Other', cents: -100 },
+    ],
+    rules: { SUNOCO: { key: 'SUNOCO', votes: { 'Automobile\u0000Fuel': 3 }, manual: null } },
+    categories: { Family: ['Consumables'], Hobbies: ['Knitting'] },
+    budgets: { Family: 100, HomeOfficeTech: 50, Food: 300 },
+  });
+  const pair = id => { const r = out.tx.find(x => x.id === id); return `${r.cat}/${r.sub}`; };
+  assert.equal(pair('a'), 'Dining/Restaurants');
+  assert.equal(pair('b'), 'Dining/Fast Food');
+  assert.equal(pair('c'), 'Health/Dental Insurance');
+  assert.equal(pair('d'), 'Health/Health Insurance');
+  assert.equal(pair('e'), 'Car/Service & Repairs');
+  assert.equal(pair('f'), 'Transport/Fuel');
+  assert.equal(pair('g'), 'Hobbies/Knitting');
+  assert.equal(out.tx.find(x => x.id === 'h').splitParent.cat, 'Household');
+  assert.equal(pair('i'), 'Income/Salary');
+  assert.equal(pair('j'), 'Income/Other');
+  assert.deepEqual(out.rules.SUNOCO.votes, { 'Transport\u0000Fuel': 3 });
+  assert.equal(out.rules['WAL MART'].manual.sub, 'Mixed Store Run');
+  assert.equal(out.rules['WAL MART'].mixed, true);
+  assert.deepEqual(out.categories.Hobbies, ['Knitting']);
+  assert.equal(out.categories.Family, undefined);
+  assert.deepEqual(out.budgets, { Household: 150, Food: 300 });
+});
+
+test('category upgrade leaves already-moved data alone when run twice', async () => {
+  const { migrateData } = await import('../js/migrate.js');
+  const first = migrateData({ tx: [{ id: 'a', desc: 'X', kind: 'expense', cat: 'Family', sub: 'Consumables', cents: 1 }], rules: {}, categories: CATS, budgets: {} });
+  const second = migrateData(first);
+  assert.deepEqual(second.tx, first.tx);
+  assert.deepEqual(second.categories, first.categories);
+});
+
+test('every category has a name the new list knows, and there is one Savings home', () => {
+  assert.equal(Object.keys(CATS).length, 17);
+  assert.equal(Object.values(CATS).flat().length, 67);
+  assert.deepEqual(CATS.Savings, ['India Remittance']);
+});
+
+test('a choice on one Walmart purchase does not change the other Walmart purchases', async () => {
+  const { pinMixedStores } = await import('../js/migrate.js');
+  const rules = pinMixedStores({});
+  learn(rules, { id: 'a', desc: 'WAL-MART #5040', kind: 'expense', cat: 'Children', sub: 'Toys' }, { manual: true });
+  const next = suggest(rules, 'WAL-MART #5088');
+  assert.equal(next.sub, 'Mixed Store Run');
+  assert.equal(next.sure, false);
+});
+
+test('income split treats each month of income as 100%', async () => {
+  const { incomeSplit } = await import('../js/report.js');
+  const row = (date, kind, cents) => ({ date, kind, cents });
+  const [normal, over, none] = incomeSplit([
+    row('2026-01-05', 'income', -100000), row('2026-01-06', 'expense', 60000), row('2026-01-07', 'savings', 15000),
+    row('2026-01-08', 'transfer', 90000),
+    row('2026-02-05', 'income', -100000), row('2026-02-06', 'expense', 90000), row('2026-02-07', 'savings', 30000),
+    row('2026-03-06', 'expense', 5000),
+  ], ['2026-01', '2026-02', '2026-03']);
+  assert.deepEqual([normal.expensePct, normal.savingsPct, normal.leftPct], [60, 15, 25]);
+  assert.equal(normal.left, 25000);
+  assert.deepEqual([over.expensePct, over.savingsPct, over.leftPct], [90, 30, 0]);
+  assert.deepEqual([none.income, none.expensePct, none.leftPct], [0, 0, 0]);
 });

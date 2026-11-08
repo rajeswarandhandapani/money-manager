@@ -29,6 +29,11 @@ Cleared,10/02/2026,MYSTERY MART,12.50,
 Cleared,10/03/2026,MYSTERY REFUND,,-5.00
 `);
 
+const EXTRA = file('Chase1234_December.csv', `Transaction Date,Post Date,Description,Category,Type,Amount,Memo
+12/02/2026,12/03/2026,SPLIT STORE,Shopping,Sale,-100.00,
+12/03/2026,12/04/2026,AMOUNT FIX,Shopping,Sale,-20.00,
+`);
+
 const rowFor = (page, text) => page.locator('.tx', { hasText: text }).first();
 
 (async () => {
@@ -57,11 +62,11 @@ const rowFor = (page, text) => page.locator('.tx', { hasText: text }).first();
 
   await page.click('[data-tab=all]');
   const shoe = rowFor(page, 'SHOE SHOP');
-  await shoe.getByLabel('Category', { exact: true }).selectOption('Family');
-  await rowFor(page, 'SHOE SHOP').getByLabel('Subcategory').selectOption('Storage');
+  await shoe.getByLabel('Category', { exact: true }).selectOption('Household');
+  await rowFor(page, 'SHOE SHOP').getByLabel('Subcategory').selectOption('Furniture');
   await page.getByRole('button', { name: 'Apply to 1 other' }).click();
   const shoes = page.locator('.tx', { hasText: 'SHOE SHOP' });
-  for (let i = 0; i < 2; i++) assert.equal(await shoes.nth(i).getByLabel('Category', { exact: true }).inputValue(), 'Family');
+  for (let i = 0; i < 2; i++) assert.equal(await shoes.nth(i).getByLabel('Category', { exact: true }).inputValue(), 'Household');
   step('category and subcategory can be changed before saving, and applied to the same merchant');
 
   const renamed = page.locator('.tx', { hasText: 'SHOE SHOP' }).nth(1);
@@ -76,8 +81,8 @@ const rowFor = (page, text) => page.locator('.tx', { hasText: text }).first();
 
   await rowFor(page, 'CORNER RENT').getByLabel('Type').selectOption('transfer');
   await rowFor(page, 'CORNER RENT').getByLabel('Type').selectOption('expense');
-  await rowFor(page, 'CORNER RENT').getByLabel('Category', { exact: true }).selectOption('HousingUtilities');
-  await rowFor(page, 'CORNER RENT').getByLabel('Subcategory').selectOption('HomeRent');
+  await rowFor(page, 'CORNER RENT').getByLabel('Category', { exact: true }).selectOption('Housing');
+  await rowFor(page, 'CORNER RENT').getByLabel('Subcategory').selectOption('Rent');
   const del = text => rowFor(page, text).getByRole('button', { name: /^Delete/ }).click();
   await del('DELETE ME STORE');
   assert.equal(await page.locator('.tx', { hasText: 'DELETE ME STORE' }).count(), 0);
@@ -90,10 +95,10 @@ const rowFor = (page, text) => page.locator('.tx', { hasText: text }).first();
   step('a row can be deleted during import, and the delete undone');
 
   assert.equal(await page.locator('#save-import').isDisabled(), true);
-  await rowFor(page, '<img').getByLabel('Category', { exact: true }).selectOption('Family');
+  await rowFor(page, '<img').getByLabel('Category', { exact: true }).selectOption('Household');
   assert.equal(await page.locator('#save-import').isDisabled(), true);
   assert.match(await rowFor(page, '<img').textContent(), /Choose a subcategory to save/);
-  await rowFor(page, '<img').getByLabel('Subcategory').selectOption('Storage');
+  await rowFor(page, '<img').getByLabel('Subcategory').selectOption('Furniture');
   assert.equal(await page.locator('#save-import').isDisabled(), false);
   step('saving is blocked until every expense has a category and subcategory');
 
@@ -110,8 +115,8 @@ const rowFor = (page, text) => page.locator('.tx', { hasText: text }).first();
 
   await page.waitForSelector('.dash .chart-plot svg');
   assert.equal(await page.locator('nav button').count(), 4);
-  assert.equal(await page.locator('.dash .chart').count(), 3);
-  for (const title of ['Income and expense, last 12 months', 'Where the money went over time', 'Spending pace through the month', 'By category', 'By account', 'Top merchants', 'Top subcategories']) {
+  assert.equal(await page.locator('.dash .chart').count(), 4);
+  for (const title of ['Income and expense, last 12 months', 'Share of income, last 12 months', 'Where the money went over time', 'Spending pace through the month', 'By category', 'By account', 'Top merchants', 'Top subcategories']) {
     assert.equal(await page.getByRole('heading', { name: title }).count(), 1, title);
   }
   await page.locator('.dash .chart-plot svg rect[fill=transparent]').nth(11).hover();
@@ -130,14 +135,40 @@ const rowFor = (page, text) => page.locator('.tx', { hasText: text }).first();
   assert.equal(await page.inputValue('#month'), '2026-10');
   step('Year view is a switch on the dashboard, and a month in its table opens that month');
 
-  await page.locator('.bar-row', { hasText: 'Family' }).click();
+  await page.locator('.bar-row', { hasText: 'Household' }).click();
   await page.getByRole('button', { name: /See or change these/ }).click();
   await page.waitForSelector('#tx-list .tx');
   assert.equal(await page.getByLabel('Month', { exact: true }).inputValue(), '2026-10');
-  assert.equal(await page.getByLabel('Category', { exact: true }).first().inputValue(), 'Family');
+  assert.equal(await page.getByLabel('Category', { exact: true }).first().inputValue(), 'Household');
   await page.click('nav [data-view=dashboard]');
   await page.waitForSelector('#kpi-spent');
   step('a category on the dashboard drills into its transactions');
+
+  assert.equal(await page.locator('#kpi-budget').count(), 0);
+  await page.click('#edit-budgets');
+  const budgetInput = name => page.getByLabel(`Budget for ${name}`, { exact: true });
+  await budgetInput('Household').fill('-5');
+  assert.equal(await page.locator('#budgets-save').isDisabled(), true);
+  await budgetInput('Household').fill('50');
+  await budgetInput('Housing').fill('1000');
+  assert.match(await page.locator('#budget-total').textContent(), /Total \$1,050\.00 a month/);
+  await page.click('#budgets-save');
+  await page.waitForSelector('#kpi-budget');
+  assert.match(await page.locator('#kpi-budget').textContent(), /Over budget\$169\.43of \$1,050\.00 · 1 over/);
+  assert.match(await page.locator('.bar-row', { hasText: 'Housing' }).textContent(), /\$200\.25 over \$1,000\.00 budget/);
+  assert.match(await page.locator('.bar-row', { hasText: 'Household' }).textContent(), /\$30\.82 left of \$50\.00/);
+  await page.waitForTimeout(150);
+  await page.reload();
+  await page.waitForSelector('#kpi-budget');
+  await page.click('.seg [data-scope=year]');
+  await page.waitForSelector('#year');
+  assert.match(await page.locator('#kpi-budget').textContent(), /of \$1,050\.00 for 1 month/);
+  await page.click('.seg [data-scope=month]');
+  await page.waitForSelector('#month');
+  await page.click('#edit-budgets');
+  assert.equal(await budgetInput('Household').inputValue(), '50');
+  await page.locator('dialog').getByRole('button', { name: 'Cancel' }).click();
+  step('budgets can be set, show spent against target, and survive a reload');
 
   await nav('tx');
   await page.waitForSelector('#tx-list .tx');
@@ -182,7 +213,7 @@ const rowFor = (page, text) => page.locator('.tx', { hasText: text }).first();
   await page.waitForSelector('#kpi-spent');
   await nav('tx');
   await page.waitForSelector('#tx-list .tx');
-  assert.equal(await rowFor(page, 'CORNER RENT').getByLabel('Category', { exact: true }).inputValue(), 'HousingUtilities');
+  assert.equal(await rowFor(page, 'CORNER RENT').getByLabel('Category', { exact: true }).inputValue(), 'Housing');
   step('a category with no subcategory is not saved on the Transactions screen');
 
   await rowFor(page, '<img').getByRole('button', { name: /^Delete/ }).click();
@@ -212,8 +243,8 @@ const rowFor = (page, text) => page.locator('.tx', { hasText: text }).first();
   await page.setInputFiles('#file-input', [NEXT_MONTH]);
   await page.waitForSelector('#review-list .tx');
   const learned = rowFor(page, 'SHOE SHOP');
-  assert.equal(await learned.getByLabel('Category', { exact: true }).inputValue(), 'Family');
-  assert.equal(await learned.getByLabel('Subcategory').inputValue(), 'Storage');
+  assert.equal(await learned.getByLabel('Category', { exact: true }).inputValue(), 'Household');
+  assert.equal(await learned.getByLabel('Subcategory').inputValue(), 'Furniture');
   assert.equal(await page.locator('.tx.review').count(), 0);
   await page.click('#save-import');
   await page.waitForSelector('#kpi-spent');
@@ -246,7 +277,7 @@ const rowFor = (page, text) => page.locator('.tx', { hasText: text }).first();
   const backupPath = path.join(fs.mkdtempSync(path.join(require('os').tmpdir(), 'me-')), 'test.backup');
   await download.saveAs(backupPath);
   const backupText = fs.readFileSync(backupPath, 'utf8');
-  assert.ok(!backupText.includes('SHOE') && !backupText.includes('Family'));
+  assert.ok(!backupText.includes('SHOE') && !backupText.includes('Household'));
   step('backup file is encrypted');
 
   await page.getByRole('button', { name: 'Erase all data on this device' }).click();
@@ -265,6 +296,7 @@ const rowFor = (page, text) => page.locator('.tx', { hasText: text }).first();
   await page.waitForSelector('#kpi-spent');
   await page.selectOption('#month', '2026-10');
   assert.equal(await kpi('spent'), '$1,218.43');
+  assert.match(await page.locator('#kpi-budget').textContent(), /\$168\.43/);
   step('backup restores, and a wrong passphrase is refused');
 
   await nav('data');
@@ -285,7 +317,7 @@ const rowFor = (page, text) => page.locator('.tx', { hasText: text }).first();
   await box.getByLabel('Amount').fill('23.40');
   await box.getByLabel('Category', { exact: true }).selectOption('Food');
   assert.equal(await addButton.isDisabled(), true);
-  await box.getByLabel('Subcategory').selectOption('Beverages');
+  await box.getByLabel('Subcategory').selectOption('Snacks & Ice Cream');
   await addButton.click();
   await page.waitForSelector('#tx-list .tx:has-text("Cash at farmers market")');
   assert.equal(await page.getByLabel('Month', { exact: true }).inputValue(), '2026-07');
@@ -306,6 +338,139 @@ const rowFor = (page, text) => page.locator('.tx', { hasText: text }).first();
   assert.equal(await kpi('spent'), '$23.40');
   assert.equal(await kpi('income'), '$100.00');
   step('added expenses and income appear in that month and survive a reload');
+
+  await nav('tx');
+  await page.waitForSelector('#tx-list .tx');
+  await rowFor(page, 'Cash at farmers market').getByLabel('Type').selectOption('savings');
+  assert.equal(await rowFor(page, 'Cash at farmers market').getByLabel('Savings subcategory').inputValue(), 'India Remittance');
+  await page.waitForTimeout(150);
+  await nav('dashboard');
+  await page.selectOption('#month', '2026-07');
+  assert.equal(await kpi('spent'), '$0.00');
+  assert.equal(await kpi('saved'), '$100.00');
+  assert.match(await page.locator('#kpi-saved').textContent(), /includes \$23\.40 in Savings/);
+  step('moving a transaction to Savings takes it out of spending and keeps it in saved');
+
+  await page.waitForSelector('.savings-card .chart-plot svg');
+  assert.match(await page.locator('.savings-total').textContent(), /\$23\.40 set aside in July 2026/);
+  assert.match(await page.locator('.savings-card').textContent(), /India Remittance\$23\.40/);
+  assert.equal(await page.locator('.savings-card .legend').count(), 0);
+  assert.equal(await page.locator('.legend', { hasText: 'Income' }).filter({ hasText: 'Expense' }).filter({ hasText: 'Savings' }).count(), 1);
+  assert.match(await page.locator('.share-chart .legend').textContent(), /Expense.*Savings.*Left over/);
+  await page.waitForSelector('.share-chart svg');
+  assert.match(await page.locator('.share-chart .seg-label').first().textContent(), /^\d+%?$/);
+  await page.click('.seg [data-scope=year]');
+  await page.waitForSelector('#year');
+  await page.waitForSelector('.savings-card .chart-plot svg');
+  assert.match(await page.locator('.savings-total').textContent(), /\$23\.40 set aside in 2026/);
+  await page.click('.seg [data-scope=month]');
+  await page.waitForSelector('#month');
+  await page.getByRole('button', { name: 'See this transaction', exact: true }).waitFor();
+  await page.getByRole('button', { name: 'See this transaction', exact: true }).click();
+  await page.waitForSelector('#tx-list .tx');
+  assert.equal(await page.locator('#tx-count').textContent(), '1 shown · $23.40 savings');
+  assert.equal(await page.getByLabel('Show', { exact: true }).inputValue(), 'savings');
+  step('the Savings card shows the total, each month and each subcategory, and links to the rows');
+
+  await nav('import');
+  await page.setInputFiles('#file-input', [EXTRA]);
+  await page.waitForSelector('#review-list .tx');
+  await page.click('[data-tab=all]');
+  await page.waitForSelector('.tx:has-text("AMOUNT FIX")');
+  const amountInput = page.getByLabel('New amount');
+  const amountSave = page.locator('.amt-edit').getByRole('button', { name: 'Save', exact: true });
+  await rowFor(page, 'AMOUNT FIX').getByRole('button', { name: 'Edit amount' }).click();
+  await amountInput.fill('0');
+  await amountSave.click();
+  assert.equal(await amountInput.count(), 1);
+  await amountInput.fill('25');
+  await amountSave.click();
+  assert.match(await rowFor(page, 'AMOUNT FIX').textContent(), /\$25\.00.*original amount: \$20\.00|original amount: \$20\.00.*\$25\.00/);
+  await rowFor(page, 'AMOUNT FIX').getByLabel('Category', { exact: true }).selectOption('Household');
+  await rowFor(page, 'AMOUNT FIX').getByLabel('Subcategory').selectOption('Furniture');
+  step('an amount can be edited during import, zero is refused, and the original is kept');
+
+  await rowFor(page, 'SPLIT STORE').getByRole('button', { name: 'Split', exact: true }).click();
+  const splitSave = page.locator('#split-save');
+  const splitSummary = () => page.locator('#split-summary').textContent();
+  const part = (n, what) => page.getByLabel(`Part ${n} ${what}`, { exact: true });
+  await part(1, 'amount').fill('60');
+  await part(1, 'category').selectOption('Food');
+  await part(1, 'subcategory').selectOption('Snacks & Ice Cream');
+  await part(2, 'amount').fill('30');
+  assert.match(await splitSummary(), /\$10\.00 left/);
+  await part(2, 'category').selectOption('Household');
+  await part(2, 'subcategory').selectOption('Furniture');
+  assert.equal(await splitSave.isDisabled(), true);
+  await part(2, 'amount').fill('50');
+  assert.match(await splitSummary(), /\$10\.00 too much/);
+  assert.equal(await splitSave.isDisabled(), true);
+  await part(2, 'amount').fill('');
+  await page.getByRole('button', { name: 'Put the rest in the last part' }).click();
+  assert.equal(await part(2, 'amount').inputValue(), '40.00');
+  assert.match(await splitSummary(), /fully assigned/);
+  await part(2, 'description').fill('Household part');
+  await splitSave.click();
+  await page.waitForSelector('.tx strong:has-text("Household part")');
+  assert.match(await rowFor(page, 'Household part').textContent(), /originally: SPLIT STORE.*part 2 of a \$100\.00 transaction/);
+  assert.match(await page.locator('.savebar').textContent(), /\$125\.00 spending/);
+  await page.click('#save-import');
+  await page.waitForSelector('#kpi-spent');
+  assert.equal(await kpi('spent'), '$125.00');
+  step('a transaction can be split during import, and the parts must add up');
+
+  await nav('tx');
+  await page.waitForSelector('.tx:has-text("AMOUNT FIX")');
+  await rowFor(page, 'AMOUNT FIX').getByRole('button', { name: 'Edit amount' }).click();
+  await amountInput.fill('30');
+  await page.keyboard.press('Enter');
+  await page.waitForFunction(() => document.querySelector('#toast').textContent.includes('Amount saved'));
+  await page.reload();
+  await page.waitForSelector('#kpi-spent');
+  assert.equal(await kpi('spent'), '$130.00');
+  step('a saved amount can be edited, and the totals follow');
+
+  await nav('import');
+  await page.setInputFiles('#file-input', [EXTRA]);
+  await page.waitForSelector('.files .card');
+  assert.match(await page.locator('.files .card').textContent(), /No new rows/);
+  assert.match(await page.locator('.files .card').textContent(), /2 already imported/);
+  await page.getByRole('button', { name: 'Discard' }).click();
+  step('edited and split rows are still recognized when the same file is imported again');
+
+  await nav('tx');
+  await page.waitForSelector('.tx:has-text("Household part")');
+  await rowFor(page, 'Household part').getByRole('button', { name: 'Edit split' }).click();
+  assert.equal(await part(2, 'description').inputValue(), 'Household part');
+  await part(1, 'amount').fill('70');
+  await part(2, 'amount').fill('30');
+  await splitSave.click();
+  await page.waitForFunction(() => document.querySelector('#toast').textContent.includes('Split saved'));
+  assert.match(await rowFor(page, 'Household part').textContent(), /\$30\.00/);
+  await rowFor(page, 'Household part').getByRole('button', { name: 'Undo split' }).click();
+  await page.waitForFunction(() => document.querySelector('#toast').textContent.includes('Split undone'));
+  assert.equal(await page.locator('.tx strong:has-text("Household part")').count(), 0);
+  assert.match(await rowFor(page, 'SPLIT STORE').textContent(), /\$100\.00/);
+  await rowFor(page, 'SPLIT STORE').getByRole('button', { name: 'Split', exact: true }).click();
+  await part(1, 'amount').fill('90');
+  await page.locator('dialog').getByRole('button', { name: 'Cancel' }).click();
+  await nav('dashboard');
+  await page.waitForSelector('#kpi-spent');
+  assert.equal(await kpi('spent'), '$130.00');
+  step('a saved split can be edited and undone, and the total stays the same');
+
+  await nav('data');
+  await page.getByRole('button', { name: 'Remove Vacation & Travel', exact: true }).click();
+  await page.waitForFunction(() => document.querySelector('#toast').textContent.includes('Removed Vacation'));
+  assert.equal(await page.getByRole('button', { name: 'Remove Vacation & Travel', exact: true }).count(), 0);
+  assert.equal(await page.getByRole('button', { name: 'Remove Housing', exact: true }).count(), 0);
+  assert.equal(await page.getByRole('button', { name: 'Remove Savings', exact: true }).count(), 0);
+  await page.reload();
+  await page.waitForSelector('#kpi-spent');
+  await nav('tx');
+  await page.waitForSelector('#tx-list .tx');
+  assert.equal(await page.locator('option', { hasText: /^Vacation$/ }).count(), 0);
+  step('an unused category can be removed, and categories in use cannot');
 
   await page.evaluate(() => navigator.serviceWorker.ready);
   await page.reload();

@@ -1,11 +1,11 @@
 // The landing page: one set of charts for a chosen month or a whole year.
 
 import { h, select, fmt, localToday } from './ui.js';
-import { groupedBars, stackedBars, divergingBars, paceLine, rankRow } from './charts.js';
+import { groupedBars, stackedBars, shareBars, divergingBars, paceLine, rankRow } from './charts.js';
 import { merchantOf } from './classify.js';
 import {
   MONTH_NAMES, monthsPresent, monthLabel, previousMonth, periodSummary, monthSeries, categoryStack,
-  spendingPace, topBy, yearMatrix, missingCards, UNCATEGORIZED,
+  spendingPace, topBy, yearMatrix, missingCards, budgetSummary, monthlySavings, incomeSplit, UNCATEGORIZED,
 } from './report.js';
 
 const SHORT = MONTH_NAMES.map(n => n.slice(0, 3));
@@ -36,16 +36,19 @@ function lastTwelve(end) {
   return out;
 }
 
-function categoryList(S, act, key, s) {
-  const max = Math.max(1, ...s.categories.map(c => c.cents));
-  return s.categories.map(c => {
+function categoryList(S, act, key, s, months) {
+  const budgetOf = name => (S.budgets[name] || 0) * months;
+  const unspent = Object.keys(S.budgets).filter(n => S.budgets[n] > 0 && !s.categories.some(c => c.name === n)).map(name => ({ name, cents: 0, subs: [] }));
+  const list = [...s.categories, ...unspent];
+  const max = Math.max(1, ...list.flatMap(c => [c.cents, budgetOf(c.name)]));
+  return list.map(c => {
     const open = S.openCat === c.name;
     const count = S.tx.filter(r => r.date.startsWith(key) && r.kind === 'expense' && (r.cat || UNCATEGORIZED) === c.name).length;
     return h('div', { class: 'cat' },
-      rankRow({ name: c.name, cents: c.cents, max, note: s.spent ? `${Math.round((c.cents / s.spent) * 100)}%` : '', expanded: open, onClick: () => { S.openCat = open ? null : c.name; act.render(); } }),
+      rankRow({ name: c.name, cents: c.cents, max, budget: budgetOf(c.name), note: s.spent ? `${Math.round((c.cents / s.spent) * 100)}%` : '', expanded: open, onClick: () => { S.openCat = open ? null : c.name; act.render(); } }),
       open && h('div', { class: 'detail' },
         c.subs.map(sub => h('div', { class: 'row between line' }, h('span', {}, sub.name), h('b', { class: 'num' }, fmt(sub.cents)))),
-        h('button', { class: 'link', onclick: () => act.goTx({ month: key, cat: c.name }) }, `See or change these ${count} transactions`)));
+        count > 0 ? h('button', { class: 'link', onclick: () => act.goTx({ month: key, cat: c.name }) }, `See or change these ${count} transactions`) : h('p', { class: 'muted' }, 'Nothing spent in this period.')));
   });
 }
 
@@ -107,14 +110,22 @@ export function viewDashboard(S, act) {
       isYear ? picker('Year', years, S.year, y => y, go('year'), 'year') : picker('Month', months, S.month, monthLabel, go('month'), 'month')))];
 
   const rate = s.earned > 0 && s.saved >= 0 ? `${Math.round((s.saved / s.earned) * 100)}% of income` : null;
+  const savedNote = [rate, s.setAside > 0 && `includes ${fmt(s.setAside)} in Savings`].filter(Boolean).join(' · ') || null;
+  const active = isYear ? new Set(S.tx.filter(r => r.kind !== 'transfer' && r.date.startsWith(key)).map(r => r.date.slice(0, 7))).size : 1;
+  const budget = budgetSummary(s.categories, S.budgets, active);
+  const hasBudgets = budget.budgeted > 0;
+  const budgetNote = `of ${fmt(budget.budgeted)}${isYear ? ` for ${active} month${active === 1 ? '' : 's'}` : ''}${budget.overCount ? ` · ${budget.overCount} over` : ''}`;
+  const budgetTile = hasBudgets && (budget.left < 0
+    ? tile('⚑ Over budget', fmt(-budget.left), budgetNote, 'kpi-budget')
+    : tile('Budget left', fmt(budget.left), budgetNote, 'kpi-budget'));
   if (isYear) {
-    const active = new Set(S.tx.filter(r => r.kind !== 'transfer' && r.date.startsWith(key)).map(r => r.date.slice(0, 7))).size;
     out.push(h('div', { class: 'tiles' },
       tile('Total spend', fmt(s.spent), null, 'kpi-spent'),
       tile('Average per month', fmt(active ? Math.round(s.spent / active) : 0), `across ${active} month${active === 1 ? '' : 's'}`, 'kpi-average'),
       tile('Top category', s.categories[0]?.name || '–', s.categories[0] ? fmt(s.categories[0].cents) : null, 'kpi-top'),
       tile('Income', fmt(s.earned), null, 'kpi-income'),
-      tile('Saved', fmt(s.saved), rate, 'kpi-saved')));
+      tile('Saved', fmt(s.saved), savedNote, 'kpi-saved'),
+      budgetTile));
   } else {
     const prev = periodSummary(S.tx, previousMonth(S.month));
     const delta = prev.count ? s.spent - prev.spent : null;
@@ -122,8 +133,9 @@ export function viewDashboard(S, act) {
     out.push(h('div', { class: 'tiles' },
       tile('Spent', fmt(s.spent), delta === null ? null : `${delta > 0 ? 'up' : 'down'} ${fmt(Math.abs(delta))} from ${prevName}`, 'kpi-spent'),
       tile('Income', fmt(s.earned), null, 'kpi-income'),
-      tile('Saved', fmt(s.saved), rate, 'kpi-saved'),
-      tile('Transactions', String(s.count), s.transfers ? `${s.transfers} transfers left out` : null, 'kpi-count')));
+      tile('Saved', fmt(s.saved), savedNote, 'kpi-saved'),
+      tile('Transactions', String(s.count), s.transfers ? `${s.transfers} transfers left out` : null, 'kpi-count'),
+      budgetTile));
 
     const missing = missingCards(S.tx, S.month);
     if (missing.length) out.push(h('p', { class: 'notice' }, `You paid ${missing.join(' and ')} this month, but no export from ${missing.length > 1 ? 'those cards' : 'that card'} is imported, so ${missing.length > 1 ? 'their' : 'its'} spending is missing.`));
@@ -142,6 +154,7 @@ export function viewDashboard(S, act) {
     act.render();
   };
   const series = monthSeries(S.tx, list);
+  const split = incomeSplit(S.tx, list);
 
   const stack = categoryStack(S.tx, list, 6);
   const stackSeries = [
@@ -165,14 +178,35 @@ export function viewDashboard(S, act) {
   const merchants = topBy(S.tx, key, r => titleCase(merchantOf(r)));
   const subs = topBy(S.tx, key, r => r.sub);
 
+  let savingsCard = null;
+  if (S.tx.some(r => r.kind === 'savings')) {
+    const savingsSubs = topBy(S.tx, key, r => r.sub, 8, 'savings');
+    const count = S.tx.filter(r => r.kind === 'savings' && r.date.startsWith(key)).length;
+    const max = Math.max(1, ...savingsSubs.map(i => i.cents));
+    savingsCard = card('Savings', 'o-2 savings-card',
+      h('p', { class: 'savings-total' }, h('b', {}, fmt(s.setAside)), h('span', { class: 'muted' }, ` set aside in ${isYear ? S.year : monthLabel(S.month)}`)),
+      groupedBars({ labels, full, selected, onPick, height: 170, series: [{ name: 'Savings', color: 'var(--series-savings)', values: monthlySavings(S.tx, list) }] }),
+      savingsSubs.map(i => rankRow({ ...i, max })),
+      count > 0 && h('button', { class: 'link', onclick: () => act.goTx({ month: key, show: 'savings' }) }, count === 1 ? 'See this transaction' : `See these ${count} transactions`));
+  }
+
   const dash = h('div', { class: 'dash' },
     h('div', { class: 'dash-left' },
       card(isYear ? `Income and expense, ${S.year}` : 'Income and expense, last 12 months', 'o-1 dash-chart',
-        groupedBars({ labels, full, selected, onPick, footer: totalLabel, series: [{ name: 'Income', color: INCOME, values: series.income }, { name: 'Expense', color: EXPENSE, values: series.expense }] })),
+        groupedBars({ labels, full, selected, onPick, footer: totalLabel, series: [{ name: 'Income', color: INCOME, values: series.income }, { name: 'Expense', color: EXPENSE, values: series.expense, onTop: { name: 'Savings', color: 'var(--series-savings)', values: monthlySavings(S.tx, list) } }] })),
+      card(isYear ? `Share of income, ${S.year}` : 'Share of income, last 12 months', 'o-1 dash-chart share-chart',
+        shareBars({ labels, full, selected, onPick, incomes: split.map(m => m.income), series: [
+          { name: 'Expense', color: EXPENSE, values: split.map(m => m.expensePct), cents: split.map(m => m.expense) },
+          { name: 'Savings', color: 'var(--series-savings)', values: split.map(m => m.savingsPct), cents: split.map(m => m.savings) },
+          { name: 'Left over', color: 'var(--c-other)', neutral: true, values: split.map(m => m.leftPct), cents: split.map(m => m.left) },
+        ] })),
       card('Where the money went over time', 'o-3 dash-chart', stackedBars({ labels, full, selected, onPick, series: stackSeries })),
       Object.assign(third, { className: `${third.className} o-4` })),
     h('div', { class: 'dash-right' },
-      card('By category', 'o-2', s.categories.length ? categoryList(S, act, key, s) : empty('No expenses in this period.')),
+      h('section', { class: 'card o-2' },
+        h('div', { class: 'row between card-head' }, h('h2', {}, 'By category'), h('button', { class: 'ghost small', id: 'edit-budgets', onclick: act.editBudgets }, hasBudgets ? 'Edit budgets' : 'Set budgets')),
+        s.categories.length || hasBudgets ? categoryList(S, act, key, s, active) : empty('No expenses in this period.')),
+      savingsCard,
       rankCard('By account', 'o-5', s.accounts, 'No expenses in this period.')),
     rankCard('Top merchants', 'dash-half o-6', merchants, 'No expenses in this period.'),
     rankCard('Top subcategories', 'dash-half o-7', subs, 'No expenses in this period.'),

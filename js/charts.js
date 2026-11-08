@@ -56,17 +56,17 @@ export const legend = items => h('div', { class: 'legend' }, items.map(item => {
 }));
 
 /** The shared frame for month-by-month columns: axis, month labels, selection and hover. */
-function columnPlot({ labels, full, selected, onPick, peak, height = 230, drawColumn, tipLines }) {
+function columnPlot({ labels, full, selected, onPick, peak, height = 230, drawColumn, tipLines, scale = niceScale, tickText = fmtShort }) {
   return plot(height, (box, W) => {
     const left = 44, top = 12, bottom = 26, H = height, baseline = H - bottom;
-    const { step, top: ceil } = niceScale(Math.max(1, peak));
+    const { step, top: ceil } = scale(Math.max(1, peak));
     const y = v => baseline - (Math.max(0, v) / ceil) * (baseline - top);
     const band = (W - left) / labels.length;
     const svg = svgEl('svg', { width: W, height: H, viewBox: `0 0 ${W} ${H}` });
     if (selected >= 0) svg.append(svgEl('rect', { x: left + band * selected, y: top - 6, width: band, height: baseline - top + 6, rx: 4, class: 'band' }));
     for (let v = 0; v <= ceil; v += step) {
       svg.append(svgEl('line', { x1: left, x2: W, y1: y(v), y2: y(v), class: 'grid' }));
-      svg.append(label({ x: left - 6, y: y(v) + 4, 'text-anchor': 'end', class: 'tick' }, fmtShort(v)));
+      svg.append(label({ x: left - 6, y: y(v) + 4, 'text-anchor': 'end', class: 'tick' }, tickText(v)));
     }
     box.append(svg);
     const tip = tooltip(box);
@@ -83,20 +83,69 @@ function columnPlot({ labels, full, selected, onPick, peak, height = 230, drawCo
   });
 }
 
-export function groupedBars({ labels, full, series, selected = -1, onPick, footer }) {
-  const peak = Math.max(1, ...series.flatMap(s => s.values));
+/** A series can carry `onTop`, a second amount drawn as a segment above its own column. */
+export function groupedBars({ labels, full, series, selected = -1, onPick, footer, height }) {
+  const positive = v => Math.max(0, v);
+  const peak = Math.max(1, ...series.flatMap(s => s.values.map((v, i) => positive(v) + positive(s.onTop?.values[i] ?? 0))));
+  const named = series.flatMap(s => (s.onTop ? [s, s.onTop] : [s]));
   const chart = columnPlot({
-    labels, full, selected, onPick, peak,
+    labels, full, selected, onPick, peak, height,
     drawColumn(svg, i, cx, band, y, baseline) {
       const w = Math.min(24, (band - 6) / series.length - 1);
       series.forEach((s, n) => {
-        const v = s.values[i];
-        if (v <= 0) return;
+        const v = positive(s.values[i]);
+        const extra = positive(s.onTop?.values[i] ?? 0);
         const x = cx - (series.length * (w + 2)) / 2 + n * (w + 2) + 1;
-        svg.append(paint(svgEl('path', { d: barPath(x, baseline, y(v), w) }), s.color));
+        if (v > 0) {
+          const d = extra > 0 ? `M${x},${baseline}V${y(v)}H${x + w}V${baseline}Z` : barPath(x, baseline, y(v), w);
+          svg.append(paint(svgEl('path', { d }), s.color));
+        }
+        if (extra > 0) {
+          const from = v > 0 ? y(v) - 2 : baseline;
+          svg.append(paint(svgEl('path', { d: barPath(x, from, Math.min(y(v + extra), from - 0.5), w) }), s.onTop.color));
+        }
       });
     },
-    tipLines: i => [...series.map(s => h('div', {}, `${s.name} ${fmt(s.values[i])}`)), ...(footer ? [h('div', {}, footer(i))] : [])],
+    tipLines: i => [...named.map(s => h('div', {}, `${s.name} ${fmt(s.values[i])}`)), ...(footer ? [h('div', {}, footer(i))] : [])],
+  });
+  return h('div', { class: 'chart' }, named.length > 1 && legend(named), chart);
+}
+
+function drawStack(svg, i, cx, band, y, series, labelOf) {
+  const w = Math.min(48, band - 8);
+  const shown = series.filter(s => s.values[i] > 0);
+  let sum = 0;
+  shown.forEach((s, n) => {
+    const from = y(sum);
+    sum += s.values[i];
+    const gap = n ? 1 : 0;
+    const to = Math.min(y(sum), from - gap - 0.5);
+    const d = n === shown.length - 1 ? barPath(cx - w / 2, from - gap, to, w) : `M${cx - w / 2},${from - gap}V${to + 1}H${cx + w / 2}V${from - gap}Z`;
+    svg.append(paint(svgEl('path', { d }), s.color));
+    // A segment too short to hold its number leaves it to the tooltip.
+    if (labelOf && from - gap - to >= 14 && w >= 12) {
+      svg.append(label({ x: cx, y: (from - gap + to) / 2 + 4, 'text-anchor': 'middle', class: `seg-label${s.neutral ? ' neutral' : ''}${w < 24 ? ' tiny' : ''}` }, labelOf(s, i, w)));
+    }
+  });
+}
+
+/**
+ * Each column is one month's income as 100%. The axis grows past 100% only for a month
+ * that went over, so an overspent month is visibly taller instead of being squashed to fit.
+ */
+export function shareBars({ labels, full, series, incomes, selected = -1, onPick, height = 200 }) {
+  const totals = labels.map((_, i) => series.reduce((sum, s) => sum + s.values[i], 0));
+  const chart = columnPlot({
+    labels, full, selected, onPick, height,
+    peak: Math.max(100, ...totals),
+    scale: peak => ({ step: 25, top: Math.ceil(peak / 25) * 25 }),
+    tickText: v => `${v}%`,
+    drawColumn(svg, i, cx, band, y) {
+      drawStack(svg, i, cx, band, y, series, (s, n, w) => `${Math.round(s.values[n])}${w >= 30 ? '%' : ''}`);
+    },
+    tipLines: i => (incomes[i] > 0
+      ? [h('div', {}, `Income ${fmt(incomes[i])}`), ...series.filter(s => s.cents[i] > 0).map(s => h('div', {}, `${s.name} ${Math.round(s.values[i])}% · ${fmt(s.cents[i])}`))]
+      : [h('div', {}, 'No income this month')]),
   });
   return h('div', { class: 'chart' }, legend(series), chart);
 }
@@ -106,19 +155,7 @@ export function stackedBars({ labels, full, series, selected = -1, onPick }) {
   const totals = labels.map((_, i) => series.reduce((sum, s) => sum + Math.max(0, s.values[i]), 0));
   const chart = columnPlot({
     labels, full, selected, onPick, peak: Math.max(1, ...totals),
-    drawColumn(svg, i, cx, band, y, baseline) {
-      const w = Math.min(48, band - 8);
-      const shown = series.filter(s => s.values[i] > 0);
-      let sum = 0;
-      shown.forEach((s, n) => {
-        const from = y(sum);
-        sum += s.values[i];
-        const gap = n ? 1 : 0;
-        const to = Math.min(y(sum), from - gap - 0.5);
-        const d = n === shown.length - 1 ? barPath(cx - w / 2, from - gap, to, w) : `M${cx - w / 2},${from - gap}V${to + 1}H${cx + w / 2}V${from - gap}Z`;
-        svg.append(paint(svgEl('path', { d }), s.color));
-      });
-    },
+    drawColumn(svg, i, cx, band, y) { drawStack(svg, i, cx, band, y, series); },
     tipLines: i => [
       h('div', {}, `Total ${fmt(totals[i])}`),
       ...[...series].filter(s => s.values[i] > 0).sort((a, b) => b.values[i] - a.values[i]).map(s => h('div', {}, `${s.name} ${fmt(s.values[i])}`)),
@@ -221,13 +258,29 @@ export function paceLine({ days, series, height = 220 }) {
 }
 
 /** One ranked row. Length is the only encoding, so every bar stays one color. */
-export function rankRow({ name, cents, max, note, onClick, expanded }) {
+export function rankRow({ name, cents, max, note, onClick, expanded, budget = 0 }) {
+  const pct = value => `${Math.max(0, (value / Math.max(1, max)) * 100)}%`;
+  const over = budget > 0 && cents > budget;
   const fill = h('span', { class: 'bar-fill' });
-  fill.style.width = `${Math.max(0, (cents / Math.max(1, max)) * 100)}%`;
+  fill.style.width = pct(over ? budget : cents);
+  const track = h('span', { class: 'bar-track' }, fill);
+  if (over) {
+    const extra = h('span', { class: 'bar-over' });
+    extra.style.left = pct(budget);
+    extra.style.width = pct(cents - budget);
+    track.append(extra);
+  }
+  if (budget > 0) {
+    const target = h('span', { class: 'bar-target' });
+    target.style.left = pct(budget);
+    track.append(target);
+  }
   const parts = [
     h('span', { class: 'bar-label' }, name),
     h('span', { class: 'bar-value' }, fmt(cents), note ? h('span', { class: 'muted bar-pct' }, note) : false),
-    h('span', { class: 'bar-track' }, fill),
+    track,
+    budget > 0 && h('span', { class: `bar-note${over ? ' over' : ''}` },
+      over ? `⚑ ${fmt(cents - budget)} over ${fmt(budget)} budget` : `${fmt(budget - cents)} left of ${fmt(budget)}`),
   ];
   return onClick
     ? h('button', { class: 'bar-row', 'aria-expanded': String(Boolean(expanded)), onclick: onClick }, parts)

@@ -1,14 +1,15 @@
 import { readExport, normalizeRows, looksFlipped, parseAmount } from './parse.js';
-import { classifyAll, learn, merchantOf, isComplete, DEFAULT_CATEGORIES } from './classify.js';
-import { MONTH_NAMES, monthOf, monthsPresent, monthChoices, monthLabel, UNCATEGORIZED } from './report.js';
+import { classifyAll, learn, merchantOf, isComplete, applyAmount, buildSplit, DEFAULT_CATEGORIES } from './classify.js';
+import { MONTH_NAMES, monthOf, monthsPresent, monthChoices, monthLabel, typicalMonthly, UNCATEGORIZED } from './report.js';
 import { readWorkbook } from './workbook.js';
 import { viewDashboard } from './dashboard.js';
 import { h, select, fmt, localToday } from './ui.js';
 import * as store from './store.js';
+import { migrateData, pinMixedStores, TAXONOMY } from './migrate.js';
 
 const prettyDate = iso => `${MONTH_NAMES[+iso.slice(5, 7) - 1].slice(0, 3)} ${+iso.slice(8)}, ${iso.slice(0, 4)}`;
 
-const S = { tx: [], rules: {}, categories: DEFAULT_CATEGORIES, profiles: [], batches: [], deleted: new Set(), drafts: new Map(), view: 'dashboard', scope: 'month', month: null, year: null, pending: null, filter: {}, openCat: null };
+const S = { tx: [], rules: {}, categories: DEFAULT_CATEGORIES, profiles: [], batches: [], budgets: {}, deleted: new Set(), drafts: new Map(), view: 'dashboard', scope: 'month', month: null, year: null, pending: null, filter: {}, openCat: null };
 const saveDeleted = () => store.setKv('deleted', [...S.deleted]);
 const main = document.querySelector('#main');
 
@@ -53,6 +54,8 @@ function download(name, text, type) {
   setTimeout(() => URL.revokeObjectURL(url), 5000);
 }
 
+const withSavings = cats => (cats.Savings ? cats : { ...cats, Savings: DEFAULT_CATEGORIES.Savings });
+
 async function saveCategories(cats) {
   S.categories = cats;
   await store.setKv('categories', cats);
@@ -94,7 +97,10 @@ function txRow(row, ctx) {
   };
   const changeKind = kind => {
     if (kind === 'income') commit({ kind, cat: 'Income', sub: row.kind === 'income' ? row.sub : 'Other' });
-    else if (kind === 'transfer') commit({ kind, cat: '', sub: '' });
+    else if (kind === 'savings') {
+      const subs = ctx.categories().Savings || [];
+      commit({ kind, cat: 'Savings', sub: subs.length === 1 ? subs[0] : '' });
+    } else if (kind === 'transfer') commit({ kind, cat: '', sub: '' });
     else commit({ kind, cat: '', sub: '' });
   };
   const changeCat = async value => {
@@ -112,15 +118,18 @@ function txRow(row, ctx) {
     if (value === NEW) {
       sub = await askText(row.kind === 'income' ? 'New income source' : `New subcategory of ${row.cat}`);
       if (!sub) return redraw();
-      if (row.kind === 'expense') await ctx.addSub(row.cat, sub);
+      if (row.kind !== 'income') await ctx.addSub(row.cat, sub);
     }
     commit({ sub });
   };
 
   const cats = ctx.categories();
-  const controls = [select('Type', row.kind, [['expense', 'Expense'], ['income', 'Income'], ['transfer', 'Not counted']], changeKind, { class: 'kind' })];
-  if (row.kind === 'expense') {
-    controls.push(select('Category', row.cat, [['', 'Choose category…'], ...Object.keys(cats), ...(row.cat && !cats[row.cat] ? [row.cat] : []), [NEW, '+ New category…']], changeCat, { class: row.cat ? '' : 'missing' }));
+  const controls = [select('Type', row.kind, [['expense', 'Expense'], ['income', 'Income'], ['savings', 'Savings'], ['transfer', 'Not counted']], changeKind, { class: 'kind' })];
+  if (row.kind === 'savings') {
+    const subs = cats.Savings || [];
+    controls.push(select('Savings subcategory', row.sub, [['', 'Choose subcategory…'], ...subs, ...(row.sub && !subs.includes(row.sub) ? [row.sub] : []), [NEW, '+ New subcategory…']], changeSub, { class: row.sub ? '' : 'missing' }));
+  } else if (row.kind === 'expense') {
+    controls.push(select('Category', row.cat, [['', 'Choose category…'], ...Object.keys(cats).filter(c => c !== 'Savings'), ...(row.cat && !cats[row.cat] ? [row.cat] : []), [NEW, '+ New category…']], changeCat, { class: row.cat ? '' : 'missing' }));
     const subs = cats[row.cat] || [];
     controls.push(select('Subcategory', row.sub, [['', row.cat ? 'Choose subcategory…' : '—'], ...subs, ...(row.sub && !subs.includes(row.sub) ? [row.sub] : []), ...(row.cat ? [[NEW, '+ New subcategory…']] : [])], changeSub, { disabled: !row.cat, class: row.cat && !row.sub ? 'missing' : '' }));
   } else if (row.kind === 'income') {
@@ -150,24 +159,130 @@ function txRow(row, ctx) {
   };
   title.append(h('button', { class: 'link edit-desc', 'aria-label': 'Edit description', onclick: startEdit }, 'Edit'));
 
+  const amountBox = h('div', { class: `tx-amt${row.kind === 'income' ? ' in' : ''}` }, amountText(row));
+  const startAmountEdit = () => {
+    const input = h('input', { value: ((row.kind === 'income' ? -row.cents : row.cents) / 100).toFixed(2), inputmode: 'decimal', 'aria-label': 'New amount', autocomplete: 'off', onkeydown: e => {
+      if (e.key === 'Enter') { e.preventDefault(); save(); }
+      if (e.key === 'Escape') { e.preventDefault(); redraw(); }
+    } });
+    const save = async () => {
+      const cents = parseAmount(input.value);
+      if (!cents || (row.kind === 'income' && cents < 0)) { toast('Enter an amount other than zero.'); input.focus(); return; }
+      const next = row.kind === 'income' ? -cents : cents;
+      if (next !== row.cents) await ctx.setAmount(row, next);
+      redraw();
+    };
+    amountBox.replaceWith(h('div', { class: 'amt-edit' }, input,
+      h('button', { class: 'primary small', onclick: save }, 'Save'),
+      h('button', { class: 'ghost small', onclick: redraw }, 'Cancel')));
+    input.focus();
+    input.select();
+  };
+  if (!row.splitOf) amountBox.append(h('button', { class: 'link edit-desc', 'aria-label': 'Edit amount', onclick: startAmountEdit }, 'Edit'));
+
   const canConfirm = row.needsReview && isComplete(row);
   const el = h('article', { class: `tx${row.needsReview ? ' review' : ''}${row.kind === 'transfer' ? ' off' : ''}` },
     h('div', { class: 'tx-head' },
       h('div', { class: 'tx-desc' },
         title,
         h('span', { class: 'muted' }, [prettyDate(row.date), row.account, row.bankCategory && `bank says: ${row.bankCategory}`].filter(Boolean).join(' · ')),
-        row.origDesc && h('span', { class: 'muted small-text' }, `originally: ${row.origDesc}`)),
-      h('div', { class: `tx-amt${row.kind === 'income' ? ' in' : ''}` }, amountText(row))),
+        row.origDesc && h('span', { class: 'muted small-text' }, `originally: ${row.origDesc}`),
+        row.origCents !== undefined && h('span', { class: 'muted small-text' }, `original amount: ${fmt(Math.abs(row.origCents))}`),
+        row.splitOf && h('span', { class: 'muted small-text' }, `part ${row.splitIndex + 1} of a ${fmt(row.splitParent.cents)} transaction`)),
+      amountBox),
     h('div', { class: 'tx-controls' }, controls,
       !isComplete(row) && h('span', { class: 'chip' }, `⚑ Choose ${row.cat ? 'a subcategory' : 'a category and subcategory'} to save`),
       isComplete(row) && row.needsReview && h('span', { class: 'chip' }, '⚑ Check'),
       canConfirm && h('button', { class: 'ghost small', onclick: () => commit({}) }, 'Looks right'),
-      h('button', { class: 'ghost small del', 'aria-label': `Delete ${row.desc}`, onclick: () => ctx.remove(row) }, 'Delete')));
+      row.kind === 'expense' && row.cents > 0 && !row.splitOf && h('button', { class: 'ghost small push', onclick: () => splitDialog(row, ctx) }, 'Split'),
+      row.splitOf && h('button', { class: 'ghost small push', onclick: () => splitDialog(row, ctx) }, 'Edit split'),
+      row.splitOf && h('button', { class: 'ghost small', onclick: () => ctx.unsplit(row) }, 'Undo split'),
+      (!row.splitOf || ctx !== pendingCtx) && h('button', { class: 'ghost small del', 'aria-label': `Delete ${row.desc}`, onclick: () => ctx.remove(row) }, 'Delete')));
   ctx.els.set(row.id, el);
   return el;
 }
 
+function splitDialog(row, ctx) {
+  const parent = row.splitOf ? row.splitParent : row;
+  const siblings = row.splitOf ? ctx.siblings(row) : [];
+  const parts = row.splitOf
+    ? siblings.map(s => ({ desc: s.desc, amount: (s.cents / 100).toFixed(2), cat: s.cat, sub: s.sub, kind: s.kind }))
+    : [{ desc: parent.desc, amount: '', cat: parent.cat, sub: parent.sub }, { desc: parent.desc, amount: '', cat: '', sub: '' }];
+  const centsOf = part => (/-|\(/.test(part.amount) ? null : parseAmount(part.amount));
+
+  return dialog(close => {
+    const list = h('div', { class: 'split-list' });
+    const summary = h('p', { class: 'split-summary', id: 'split-summary' });
+    const assigned = () => parts.reduce((sum, p) => sum + (centsOf(p) || 0), 0);
+    const valid = () => parts.length >= 2 && assigned() === parent.cents
+      && parts.every(p => p.desc.trim() && centsOf(p) > 0 && isComplete({ kind: p.kind || 'expense', cat: p.cat, sub: p.sub }));
+    const save = h('button', { class: 'primary', id: 'split-save', onclick: async () => {
+      if (!valid()) return;
+      await ctx.split(parent, parts.map(p => ({ desc: p.desc.replace(/\s+/g, ' ').trim(), cents: centsOf(p), cat: p.cat, sub: p.sub, kind: p.kind || 'expense' })), siblings);
+      close(true);
+    } }, 'Save split');
+    const refresh = () => {
+      const left = parent.cents - assigned();
+      summary.textContent = `Total ${fmt(parent.cents)} · assigned ${fmt(assigned())} · ${left === 0 ? 'fully assigned' : left > 0 ? `${fmt(left)} left` : `${fmt(-left)} too much`}`;
+      summary.classList.toggle('over', left < 0);
+      save.disabled = !valid();
+    };
+    const draw = () => {
+      list.replaceChildren(...parts.map((part, i) => {
+        const n = i + 1;
+        const cats = ctx.categories();
+        const names = Object.keys(cats).filter(c => c !== 'Savings' || part.cat === 'Savings');
+        const subs = cats[part.cat] || [];
+        const pickCat = async value => {
+          let cat = value;
+          if (value === NEW) {
+            cat = await askText('New category');
+            if (!cat) return draw();
+            if (!ctx.categories()[cat]) await ctx.addCategory(cat);
+          }
+          const choices = ctx.categories()[cat] || [];
+          Object.assign(part, { cat, sub: choices.length === 1 ? choices[0] : '', kind: cat === 'Savings' ? 'savings' : 'expense' });
+          draw(); refresh();
+        };
+        const pickSub = async value => {
+          let sub = value;
+          if (value === NEW) {
+            sub = await askText(`New subcategory of ${part.cat}`);
+            if (!sub) return draw();
+            await ctx.addSub(part.cat, sub);
+          }
+          part.sub = sub;
+          draw(); refresh();
+        };
+        return h('div', { class: 'split-part' },
+          h('input', { class: 'split-desc', value: part.desc, 'aria-label': `Part ${n} description`, maxlength: 200, autocomplete: 'off', oninput: e => { part.desc = e.target.value; refresh(); } }),
+          h('input', { class: 'split-amount', value: part.amount, inputmode: 'decimal', placeholder: '0.00', 'aria-label': `Part ${n} amount`, autocomplete: 'off', oninput: e => { part.amount = e.target.value; refresh(); } }),
+          h('button', { class: 'ghost small', 'aria-label': `Remove part ${n}`, disabled: parts.length <= 2, onclick: () => { parts.splice(i, 1); draw(); refresh(); } }, 'Remove'),
+          select(`Part ${n} category`, part.cat, [['', 'Choose category…'], ...names, ...(part.cat && !cats[part.cat] ? [part.cat] : []), [NEW, '+ New category…']], pickCat, { class: part.cat ? '' : 'missing' }),
+          select(`Part ${n} subcategory`, part.sub, [['', part.cat ? 'Choose subcategory…' : '—'], ...subs, ...(part.sub && !subs.includes(part.sub) ? [part.sub] : []), ...(part.cat ? [[NEW, '+ New subcategory…']] : [])], pickSub, { disabled: !part.cat, class: part.cat && !part.sub ? 'missing' : '' }));
+      }));
+    };
+    draw();
+    refresh();
+    return h('div', { class: 'stack' },
+      h('h2', {}, 'Split transaction'),
+      h('p', { class: 'muted' }, `${parent.origDesc || parent.desc} · ${prettyDate(parent.date)}`),
+      list,
+      h('div', { class: 'row' },
+        h('button', { class: 'ghost small', onclick: () => { parts.push({ desc: parent.desc, amount: '', cat: '', sub: '' }); draw(); refresh(); } }, '+ Add part'),
+        h('button', { class: 'ghost small', onclick: () => {
+          const last = parts[parts.length - 1];
+          const others = parts.slice(0, -1).reduce((sum, p) => sum + (centsOf(p) || 0), 0);
+          if (parent.cents - others > 0) last.amount = ((parent.cents - others) / 100).toFixed(2);
+          draw(); refresh();
+        } }, 'Put the rest in the last part')),
+      summary,
+      h('div', { class: 'row end' }, h('button', { class: 'ghost', onclick: () => close(null) }, 'Cancel'), save));
+  });
+}
+
 function offerApplyToOthers(row, list, apply) {
+  if (row.splitOf) return;
   const key = merchantOf(row);
   const sameMerchant = other => other === key || other.startsWith(`${key} `) || key.startsWith(`${other} `);
   const others = list.filter(r => r !== row && !r.edited && sameMerchant(merchantOf(r)) && (r.kind !== row.kind || r.cat !== row.cat || r.sub !== row.sub));
@@ -178,7 +293,7 @@ function offerApplyToOthers(row, list, apply) {
 /* ---------- Import ---------- */
 
 function newPending() {
-  return { files: [], edits: new Map(), renames: new Map(), removed: new Set(), rules: structuredClone(S.rules), rows: [], tab: 'review', els: new Map() };
+  return { files: [], edits: new Map(), renames: new Map(), amounts: new Map(), splits: new Map(), removed: new Set(), rules: structuredClone(S.rules), rows: [], tab: 'review', els: new Map() };
 }
 
 function pendingCategories() {
@@ -187,7 +302,7 @@ function pendingCategories() {
 
 function rebuildPending() {
   const P = S.pending;
-  const existing = new Set(S.tx.map(r => r.id));
+  const existing = new Set(S.tx.flatMap(r => (r.splitOf ? [r.id, r.splitOf] : [r.id]))); // A split row still counts as its original.
   const rules = structuredClone(S.rules);
   for (const f of P.files) {
     if (f.workbook) f.rows.forEach(r => learn(rules, r));
@@ -208,8 +323,11 @@ function rebuildPending() {
     const e = P.edits.get(r.id);
     if (e) Object.assign(r, { kind: e.kind, cat: e.cat, sub: e.sub, edited: true, needsReview: !isComplete(e) });
     if (P.renames.has(r.id)) applyRename(r, P.renames.get(r.id));
+    if (P.amounts.has(r.id)) applyAmount(r, P.amounts.get(r.id));
   }
-  P.rows = classified.sort((a, b) => a.date.localeCompare(b.date));
+  P.rows = classified
+    .flatMap(r => (P.splits.has(r.id) ? buildSplit(r, P.splits.get(r.id)) : [r]))
+    .sort((a, b) => a.date.localeCompare(b.date));
   P.history = P.files.filter(f => f.workbook).flatMap(f => f.rows.filter(r => !existing.has(r.id) && !S.deleted.has(r.id)));
 }
 
@@ -348,8 +466,25 @@ const pendingCtx = {
   addCategory: async name => { const c = pendingCategories(); c[name] = []; if (c === S.categories) await saveCategories(c); },
   addSub: async (cat, sub) => { const c = pendingCategories(); c[cat] = [...(c[cat] || []), sub]; if (c === S.categories) await saveCategories(c); },
   rename(row, next) {
-    S.pending.renames.set(row.id, next);
+    if (row.splitOf) S.pending.splits.get(row.splitOf)[row.splitIndex].desc = next;
+    else S.pending.renames.set(row.id, next);
     applyRename(row, next);
+  },
+  setAmount(row, cents) {
+    S.pending.amounts.set(row.id, cents);
+    applyAmount(row, cents);
+    updateImportCounts();
+  },
+  siblings: row => S.pending.rows.filter(r => r.splitOf === row.splitOf).sort((a, b) => a.splitIndex - b.splitIndex),
+  split(parent, parts) {
+    S.pending.splits.set(parent.id, parts);
+    rebuildPending();
+    render();
+  },
+  unsplit(row) {
+    S.pending.splits.delete(row.splitOf);
+    rebuildPending();
+    render();
   },
   remove(row) {
     const P = S.pending;
@@ -369,6 +504,11 @@ const pendingCtx = {
   },
   changed(row) {
     const P = S.pending;
+    if (row.splitOf) {
+      Object.assign(P.splits.get(row.splitOf)[row.splitIndex], { kind: row.kind, cat: row.cat, sub: row.sub });
+      updateImportCounts();
+      return;
+    }
     P.edits.set(row.id, { desc: row.origDesc || row.desc, kind: row.kind, cat: row.cat, sub: row.sub });
     updateImportCounts();
     offerApplyToOthers(row, P.rows, others => {
@@ -443,7 +583,7 @@ async function savePending() {
   const history = P.history || [];
   const rows = [...P.rows, ...history].map(r => ({ ...r, batch: batchId }));
   const workbook = P.files.find(f => f.workbook);
-  if (workbook) await saveCategories(workbook.categories);
+  if (workbook) await saveCategories(withSavings(workbook.categories));
 
   for (const [id, e] of P.edits) learn(P.rules, { id, desc: e.desc, kind: e.kind, cat: e.cat, sub: e.sub }, { manual: true });
   for (const r of P.rows) {
@@ -513,6 +653,33 @@ const txCtx = {
     await store.putTx([{ ...row, ...S.drafts.get(row.id) }]);
     toast('Description saved.');
   },
+  async setAmount(row, cents) {
+    applyAmount(row, cents);
+    await store.putTx([{ ...row, ...S.drafts.get(row.id) }]);
+    updateTxCount();
+    toast('Amount saved.');
+  },
+  siblings: row => S.tx.filter(r => r.splitOf === row.splitOf).sort((a, b) => a.splitIndex - b.splitIndex),
+  async split(parent, parts, previous = []) {
+    const children = buildSplit(parent, parts);
+    const replaced = new Set([parent.id, ...previous.map(r => r.id)]);
+    await store.deleteTx([...replaced]);
+    await store.putTx(children);
+    S.tx = [...S.tx.filter(r => !replaced.has(r.id)), ...children];
+    replaced.forEach(id => S.drafts.delete(id));
+    drawTxList();
+    toast('Split saved.');
+  },
+  async unsplit(row) {
+    const parts = txCtx.siblings(row);
+    const ids = new Set(parts.map(r => r.id));
+    await store.deleteTx([...ids]);
+    await store.putTx([row.splitParent]);
+    S.tx = [...S.tx.filter(r => !ids.has(r.id)), row.splitParent];
+    ids.forEach(id => S.drafts.delete(id));
+    drawTxList();
+    toast('Split undone.');
+  },
   beforeChange(row) {
     if (!S.drafts.has(row.id)) S.drafts.set(row.id, { kind: row.kind, cat: row.cat, sub: row.sub, needsReview: row.needsReview, edited: row.edited });
   },
@@ -520,6 +687,7 @@ const txCtx = {
     if (S.drafts.has(row.id)) { Object.assign(row, S.drafts.get(row.id)); S.drafts.delete(row.id); }
     S.tx = S.tx.filter(r => r !== row);
     S.deleted.add(row.id);
+    if (row.splitOf) S.deleted.add(row.splitOf); // Deleting every part must not let a re-import bring the original back.
     await store.deleteTx([row.id]);
     await saveDeleted();
     txCtx.els.get(row.id)?.remove();
@@ -538,6 +706,7 @@ const txCtx = {
     if (!isComplete(row)) return; // Held on screen only until the subcategory is chosen.
     S.drafts.delete(row.id);
     await store.putTx([row]);
+    if (row.splitOf) return; // One part of a split says nothing about the merchant as a whole.
     learn(S.rules, row, { manual: true });
     await store.setKv('rules', S.rules);
     offerApplyToOthers(row, S.tx, async others => {
@@ -573,9 +742,14 @@ function revertDrafts() {
 
 function updateTxCount() {
   const rows = filteredTx();
-  const total = rows.filter(r => r.kind === 'expense').reduce((s, r) => s + r.cents, 0);
+  const sumOf = kind => rows.filter(r => r.kind === kind).reduce((s, r) => s + r.cents, 0);
+  const expenses = rows.some(r => r.kind === 'expense');
+  const savings = rows.some(r => r.kind === 'savings');
+  const parts = [`${rows.length} shown`];
+  if (expenses || !savings) parts.push(`${fmt(sumOf('expense'))} spending`);
+  if (savings) parts.push(`${fmt(sumOf('savings'))} savings`);
   const label = document.querySelector('#tx-count');
-  if (label) label.textContent = `${rows.length} shown · ${fmt(total)} spending`;
+  if (label) label.textContent = parts.join(' · ');
 }
 
 function drawTxList() {
@@ -645,7 +819,7 @@ function addTransaction() {
     const onSub = value => {
       if (value === NEW) {
         return askNew(draft.kind === 'income' ? 'New income source' : `New subcategory of ${draft.cat}`, async name => {
-          if (draft.kind === 'expense') await txCtx.addSub(draft.cat, name);
+          if (draft.kind !== 'income') await txCtx.addSub(draft.cat, name);
           draft.sub = name;
         });
       }
@@ -653,6 +827,12 @@ function addTransaction() {
       check();
     };
     function drawChoices() {
+      if (draft.kind === 'savings') {
+        const subs = S.categories.Savings || [];
+        choices.replaceChildren(h('label', { class: 'field' }, 'Savings subcategory',
+          select('Savings subcategory', draft.sub, [['', 'Choose subcategory…'], ...subs, [NEW, '+ New subcategory…']], onSub)));
+        return;
+      }
       if (draft.kind === 'income') {
         const sources = incomeSources();
         choices.replaceChildren(h('label', { class: 'field' }, 'Income source',
@@ -661,7 +841,7 @@ function addTransaction() {
       }
       const subs = S.categories[draft.cat] || [];
       choices.replaceChildren(
-        h('label', { class: 'field' }, 'Category', select('Category', draft.cat, [['', 'Choose category…'], ...Object.keys(S.categories), [NEW, '+ New category…']], onCat)),
+        h('label', { class: 'field' }, 'Category', select('Category', draft.cat, [['', 'Choose category…'], ...Object.keys(S.categories).filter(c => c !== 'Savings'), [NEW, '+ New category…']], onCat)),
         h('label', { class: 'field' }, 'Subcategory', select('Subcategory', draft.sub, [['', draft.cat ? 'Choose subcategory…' : '—'], ...subs, ...(subs.includes(draft.sub) || !draft.sub ? [] : [draft.sub]), ...(draft.cat ? [[NEW, '+ New subcategory…']] : [])], onSub, { disabled: !draft.cat })));
     }
     drawChoices();
@@ -673,10 +853,11 @@ function addTransaction() {
         h('label', { class: 'field' }, 'Amount', h('input', { inputmode: 'decimal', placeholder: '0.00', 'aria-label': 'Amount', autocomplete: 'off', oninput: e => { draft.amount = e.target.value; check(); } }))),
       h('label', { class: 'field' }, 'Description', h('input', { 'aria-label': 'Description', autocomplete: 'off', oninput: e => { draft.desc = e.target.value; check(); } })),
       h('div', { class: 'grid2' },
-        h('label', { class: 'field' }, 'Type', select('Type', draft.kind, [['expense', 'Expense'], ['income', 'Income']], v => {
+        h('label', { class: 'field' }, 'Type', select('Type', draft.kind, [['expense', 'Expense'], ['income', 'Income'], ['savings', 'Savings']], v => {
           draft.kind = v;
-          draft.cat = v === 'income' ? 'Income' : '';
-          draft.sub = v === 'income' ? 'Other' : '';
+          const savingsSubs = S.categories.Savings || [];
+          draft.cat = v === 'income' ? 'Income' : v === 'savings' ? 'Savings' : '';
+          draft.sub = v === 'income' ? 'Other' : v === 'savings' && savingsSubs.length === 1 ? savingsSubs[0] : '';
           drawChoices(); check();
         })),
         h('label', { class: 'field' }, 'Account', select('Account', draft.account, accounts, v => { draft.account = v; }))),
@@ -698,7 +879,7 @@ function viewTx() {
       select('Month', f.month || '', [['', 'All months'], ...[...new Set(months.map(m => m.slice(0, 4)))].map(y => [y, `All of ${y}`]), ...months.map(m => [m, monthLabel(m)])], set('month')),
       select('Account', f.account || '', [['', 'All accounts'], ...accounts], set('account')),
       select('Category', f.cat || '', [['', 'All categories'], ...Object.keys(S.categories), UNCATEGORIZED], set('cat')),
-      select('Show', f.show || '', [['', 'Everything'], ['review', 'Needs a look'], ['expense', 'Expenses'], ['income', 'Income'], ['transfer', 'Not counted']], set('show'))),
+      select('Show', f.show || '', [['', 'Everything'], ['review', 'Needs a look'], ['expense', 'Expenses'], ['income', 'Income'], ['savings', 'Savings'], ['transfer', 'Not counted']], set('show'))),
     h('p', { class: 'muted', id: 'tx-count' }),
     h('div', { class: 'list', id: 'tx-list' }),
   ];
@@ -751,6 +932,28 @@ async function undoBatch(b) {
   toast('Import removed.');
 }
 
+async function removeCategory(name) {
+  const { [name]: removed, ...rest } = S.categories;
+  await saveCategories(rest);
+  if (S.budgets[name]) {
+    const { [name]: dropped, ...budgets } = S.budgets;
+    S.budgets = budgets;
+    await store.setKv('budgets', budgets);
+  }
+  render();
+  toast(`Removed ${name}.`);
+}
+
+function unusedCategories() {
+  const used = new Set(S.tx.map(r => r.cat));
+  const names = Object.keys(S.categories).filter(c => c !== 'Savings' && !used.has(c));
+  if (!names.length) return null;
+  return h('section', { class: 'card stack' }, h('h2', {}, 'Unused categories'),
+    h('p', { class: 'muted' }, 'No transaction uses these. You can add a category again from any transaction.'),
+    names.map(name => h('div', { class: 'row between line' }, h('span', {}, name),
+      h('button', { class: 'ghost small', 'aria-label': `Remove ${name}`, onclick: () => removeCategory(name) }, 'Remove'))));
+}
+
 function viewData() {
   const restore = h('input', { type: 'file', hidden: true, accept: '.backup,application/octet-stream,*/*', onchange: e => { if (e.target.files[0]) restoreBackup(e.target.files[0]); e.target.value = ''; } });
   const install = window.__installPrompt && h('button', { class: 'primary', onclick: async () => { window.__installPrompt.prompt(); window.__installPrompt = null; render(); } }, 'Install this app');
@@ -764,10 +967,11 @@ function viewData() {
       S.batches.length ? S.batches.map(b => h('div', { class: 'row between line' },
         h('div', {}, h('div', {}, b.files.join(', ')), h('span', { class: 'muted' }, `${prettyDate(b.at.slice(0, 10))} · ${S.tx.filter(r => r.batch === b.id).length} transactions`)),
         h('button', { class: 'ghost small', onclick: () => undoBatch(b) }, 'Undo'))) : h('p', { class: 'muted' }, 'Nothing imported yet.')),
+    unusedCategories(),
     h('section', { class: 'card stack' }, h('h2', {}, 'Export'),
       h('button', { class: 'ghost', onclick: () => {
         const lines = [['Date', 'Description', 'Amount', 'Type', 'Category', 'Subcategory', 'Account'].join(',')];
-        for (const r of [...S.tx].sort((a, b) => a.date.localeCompare(b.date))) lines.push([r.date, r.desc, (r.cents / 100).toFixed(2), r.kind, r.cat, r.sub, r.account].map(csvCell).join(','));
+        for (const r of [...S.tx].sort((a, b) => a.date.localeCompare(b.date))) lines.push([r.date, r.desc, ((r.kind === 'income' ? -r.cents : r.cents) / 100).toFixed(2), r.kind, r.cat, r.sub, r.account].map(csvCell).join(','));
         download('money-manager-transactions.csv', lines.join('\r\n'), 'text/csv');
       } }, 'Download all transactions as CSV')),
     h('section', { class: 'card stack' }, h('h2', {}, 'Erase'),
@@ -784,7 +988,66 @@ function viewData() {
 
 /* ---------- Shell ---------- */
 
+function editBudgets() {
+  const typical = typicalMonthly(S.tx);
+  const names = Object.keys(S.categories).filter(c => c !== 'Savings');
+  const values = Object.fromEntries(names.map(c => [c, S.budgets[c] ? String(S.budgets[c] / 100) : '']));
+  const parse = text => {
+    const t = text.trim();
+    if (!t) return 0;
+    return /-|\(/.test(t) ? null : parseAmount(t);
+  };
+
+  return dialog(close => {
+    const inputs = new Map();
+    const summary = h('p', { class: 'muted', id: 'budget-total' });
+    const save = h('button', { class: 'primary', id: 'budgets-save', onclick: async () => {
+      const next = {};
+      for (const [name, text] of Object.entries(values)) {
+        const cents = parse(text);
+        if (cents > 0) next[name] = cents;
+      }
+      S.budgets = next;
+      await store.setKv('budgets', next);
+      close(true);
+      render();
+      toast('Budgets saved.');
+    } }, 'Save budgets');
+    const update = () => {
+      const parsed = Object.values(values).map(parse);
+      const invalid = parsed.includes(null);
+      save.disabled = invalid;
+      if (invalid) { summary.textContent = 'Budgets must be positive amounts.'; return; }
+      const total = parsed.reduce((a, b) => a + b, 0);
+      summary.textContent = `Total ${fmt(total)} a month${typical.income > 0 ? ` · typical income ${fmt(typical.income)} · leaves ${fmt(typical.income - total)}` : ''}`;
+    };
+    const rows = names.map(name => {
+      const input = h('input', { inputmode: 'decimal', placeholder: '0', autocomplete: 'off', 'aria-label': `Budget for ${name}`, value: values[name], oninput: e => { values[name] = e.target.value; update(); } });
+      inputs.set(name, input);
+      return h('label', { class: 'budget-row' }, h('span', { class: 'budget-name' }, name), h('span', { class: 'muted small-text' }, typical.categories[name] ? `typical ${fmt(typical.categories[name])}` : ''), input);
+    });
+    const fill = h('button', { class: 'ghost small', onclick: () => {
+      for (const name of names) {
+        const rounded = Math.round((typical.categories[name] || 0) / 1000) * 10;
+        if (values[name].trim() || rounded <= 0) continue;
+        values[name] = String(rounded);
+        inputs.get(name).value = values[name];
+      }
+      update();
+    } }, 'Fill blanks with typical amounts');
+    update();
+    return h('div', { class: 'stack' },
+      h('h2', {}, 'Monthly budgets'),
+      h('p', { class: 'muted' }, 'Leave a category blank if you don’t want to track it. “Typical” is your middle month.'),
+      fill,
+      h('div', { class: 'budget-list' }, rows),
+      summary,
+      h('div', { class: 'row end' }, h('button', { class: 'ghost', onclick: () => close(null) }, 'Cancel'), save));
+  });
+}
+
 const dashboardActions = {
+  editBudgets,
   render: () => render(),
   goTx: filter => { S.filter = filter; S.view = 'tx'; render(); window.scrollTo(0, 0); },
   goImport: () => { S.view = 'import'; render(); },
@@ -807,13 +1070,39 @@ function pickDefaults() {
   S.year = S.month?.slice(0, 4) || null;
 }
 
+/** Moves saved data to the current category list once, keeping a copy of how it was. */
+async function upgradeCategories() {
+  const from = await store.getKv('taxonomy') || 1;
+  if (from >= TAXONOMY) return;
+  const before = {
+    tx: await store.allTx(),
+    rules: await store.getKv('rules'),
+    categories: await store.getKv('categories'),
+    budgets: await store.getKv('budgets'),
+  };
+  const hasData = before.tx.length || before.categories;
+  if (hasData && from < 2) {
+    await store.setKv('beforeTaxonomy2', before);
+    const after = migrateData(before);
+    await store.putTx(after.tx);
+    await store.setKv('rules', after.rules);
+    await store.setKv('categories', after.categories);
+    await store.setKv('budgets', after.budgets);
+  } else if (hasData) {
+    await store.setKv('rules', pinMixedStores(before.rules || {}));
+  }
+  await store.setKv('taxonomy', TAXONOMY);
+}
+
 async function loadAll() {
+  await upgradeCategories();
   S.tx = await store.allTx();
   S.rules = await store.getKv('rules') || {};
-  S.categories = await store.getKv('categories') || structuredClone(DEFAULT_CATEGORIES);
+  S.categories = withSavings(await store.getKv('categories') || structuredClone(DEFAULT_CATEGORIES));
   S.profiles = await store.getKv('profiles') || [];
   S.batches = await store.getKv('batches') || [];
   S.deleted = new Set(await store.getKv('deleted') || []);
+  S.budgets = await store.getKv('budgets') || {};
   S.drafts.clear();
   for (const r of S.tx) if (!isComplete(r)) r.needsReview = true;
   S.filter = {};

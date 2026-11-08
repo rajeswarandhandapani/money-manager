@@ -2,28 +2,27 @@
 // transfer that must not count. Learns from the person's own corrections.
 
 export const DEFAULT_CATEGORIES = {
-  HousingUtilities: ['Electricity', 'Gas', 'WaterSewer', 'Internet', 'Telephone', 'HomeRent', 'Print', 'Postage', 'SecurityDeposit'],
-  HomeOfficeTech: ['Electronics', 'Furniture', 'OfficeSupplies', 'PhoneCase/Photos'],
-  Food: ['Groceries(Meat,Fish,Produce)', 'Snacks/IceCream', 'Beverages', 'TempleFood'],
-  Dining: ['DiningOut'],
-  Automobile: ['LoanEMI', 'Fuel', 'Service/Maintenance', 'CarWash', 'Registration', 'Tolls/Parking', 'TrafficTickets', 'AutoInsurance'],
-  Travel: ['Flights', 'Hotels', 'RentalCars', 'Bus'],
-  Vacation: ['VacationFood', 'Souvenirs'],
-  Health: ['HSAContributions', 'MedicalConsultations', 'Pharmacy'],
-  Wellness: ['Gym/Fitness', 'Nutrition', 'Moisturizer'],
-  PersonalCare: ['AdultClothing', 'Salon/Haircuts', 'Laundry', 'Jewelry/Watches', 'Shoes'],
-  Family: ['Consumables', 'Garden/IndoorPlants', 'Storage', 'Toiletries(Shampoo,BodyWash)'],
-  Children: ['Schooling/Tuition', 'Academy/Classes(Dance,Swim)', 'SportsGear', 'Toys', 'BirthdayCelebrations', 'Clothing', 'KidsShoes'],
-  Entertainment: ['Streaming(Netflix/etc.)', 'Movies', 'ComputerGames', 'GameCenters', 'LocalOutings(Circus,FarmPicking)'],
-  Gifts: ['Birthdays', 'GeneralGifting'],
-  WorkEducation: ['Certifications', 'OnlineCourses', 'Textbooks', 'WebsiteDNS', 'ResumeServices', 'TaxFiling', 'SoftwareLicenses'],
-  IdentityLegal: ['VisaFees', 'PassportRenewal', 'DrivingLicense', 'GovernmentIDServices'],
-  Insurance: ['Home/RentersInsurance', 'Health/DentalInsurance', 'LifeInsurance'],
-  Remittances: ['RemitlyTransfer', 'RiaTransfer', 'BankWire', 'TransferFees', 'ExchangeRateAdjustments'],
+  Housing: ['Rent', 'Electricity', 'Gas', 'Water & Sewer', 'Internet', 'Phone', 'Renters Insurance'],
+  Food: ['Groceries', 'Snacks & Ice Cream', 'Temple Food'],
+  Dining: ['Restaurants', 'Fast Food', 'Coffee & Tea'],
+  Household: ['Supplies', 'Toiletries & Skincare', 'Mixed Store Run', 'Home & Garden', 'Furniture', 'Electronics', 'Office & Postage'],
+  Clothing: ['Adult Clothing & Shoes', 'Kids Clothing & Shoes'],
+  'Personal Care': ['Haircuts'],
+  Children: ['School', 'Classes', 'Sports Gear', 'Toys', 'Birthday Parties'],
+  Transport: ['Fuel', 'Bus', 'Parking & Tolls'],
+  Car: ['Service & Repairs', 'Auto Insurance', 'Registration'],
+  Health: ['Doctor & Dental', 'Pharmacy', 'HSA Contribution', 'Health Insurance', 'Dental Insurance', 'Life Insurance'],
+  Wellness: ['Gym'],
+  'Vacation & Travel': ['Flights', 'Hotels', 'Rental Cars', 'Food', 'Parking & Tolls', 'Attractions', 'Camping', 'Souvenirs'],
+  Entertainment: ['Local Outings', 'Streaming', 'Games', 'Movies', 'Play Centers'],
+  'Gifts & Giving': ['Birthdays', 'Gifts', 'Donations'],
+  'Work & Education': ['Certifications', 'Courses & Books', 'Software', 'Website', 'Resume'],
+  'Government & Legal': ['Visa', 'Passport', 'Licenses & IDs', 'Tax Filing'],
+  Savings: ['India Remittance'],
 };
 
-/** An expense can't be saved without both. Income and "Not counted" rows don't use them. */
-export const isComplete = row => row.kind !== 'expense' || Boolean(row.cat && row.sub);
+/** Expenses and savings can't be saved without both. Income and "Not counted" rows don't use them. */
+export const isComplete = row => (row.kind !== 'expense' && row.kind !== 'savings') || Boolean(row.cat && row.sub);
 
 const PERSON_PAYMENT =/^(ZELLE|VENMO|CASH APP|CASHAPP|PAYPAL)\b/;
 const NOISE = new Set(['ACH', 'WEB', 'RECUR', 'DEBIT', 'PMTS', 'PMT', 'POS', 'THE', 'INC', 'LLC']);
@@ -50,14 +49,14 @@ export function isCardPayment(row) {
 
 /** Banks' own labels, used only as a low-confidence starting point for unknown merchants. */
 const BANK_HINTS = {
-  gas: ['Automobile', 'Fuel'],
-  groceries: ['Food', 'Groceries(Meat,Fish,Produce)'],
-  'food & drink': ['Dining', 'DiningOut'],
-  'food and drink': ['Dining', 'DiningOut'],
-  dining: ['Dining', 'DiningOut'],
-  restaurants: ['Dining', 'DiningOut'],
-  utilities: ['HousingUtilities', 'Electricity'],
-  cable: ['HousingUtilities', 'Internet'],
+  gas: ['Transport', 'Fuel'],
+  groceries: ['Food', 'Groceries'],
+  'food & drink': ['Dining', 'Restaurants'],
+  'food and drink': ['Dining', 'Restaurants'],
+  dining: ['Dining', 'Restaurants'],
+  restaurants: ['Dining', 'Restaurants'],
+  utilities: ['Housing', 'Electricity'],
+  cable: ['Housing', 'Internet'],
 };
 
 /** Adds one transaction to the learned merchant list. A manual choice always wins afterwards. */
@@ -65,6 +64,7 @@ export function learn(rules, row, { manual = false } = {}) {
   const key = merchantOf(row);
   if (!key) return null;
   const rule = rules[key] || (rules[key] = { key, votes: {}, manual: null });
+  if (rule.storeDefault) return rule;
   if (manual) {
     const next = { kind: row.kind, cat: row.cat || '', sub: row.sub || '', rowId: row.id };
     // Different choices on different rows (Amazon, say) mean the merchant varies: keep asking.
@@ -128,6 +128,36 @@ export function suggest(rules, desc) {
   const t = tally(matches);
   if (!t) return null;
   return { kind: 'expense', cat: t.cat, sub: t.sub, sure: sureWhenClear && t.share >= 0.75 };
+}
+
+/** Changes the amount but remembers the bank's figure. The row's id stays, so duplicates are still caught. */
+export function applyAmount(row, cents) {
+  const original = row.origCents ?? row.cents;
+  if (row.id.startsWith('Manual|') || cents === original) delete row.origCents;
+  else row.origCents = original;
+  row.cents = cents;
+}
+
+/**
+ * Turns one transaction into parts. Each part keeps the original row, so the split can be
+ * undone and a re-import of the same bank file still recognizes it.
+ */
+export function buildSplit(parent, parts) {
+  const { splitParent, ...snapshot } = parent;
+  const bankText = parent.origDesc || parent.desc;
+  return parts.map((part, i) => {
+    const child = {
+      ...snapshot,
+      id: `${parent.id}|split|${i + 1}`,
+      desc: part.desc, cents: part.cents, kind: part.kind || 'expense', cat: part.cat, sub: part.sub,
+      needsReview: false, edited: true,
+      splitOf: parent.id, splitIndex: i, splitParent: snapshot,
+    };
+    delete child.origCents;
+    if (!parent.id.startsWith('Manual|') && part.desc !== bankText) child.origDesc = bankText;
+    else delete child.origDesc;
+    return child;
+  });
 }
 
 /** Fills in kind, category and whether the person should look at this row. */

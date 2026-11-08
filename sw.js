@@ -1,6 +1,6 @@
 // Saves the app's own files for offline use. Bank data is never in here: it lives in IndexedDB.
 // Tries the network first so updates show up, and falls back to the saved copy.
-const CACHE = 'money-manager-v3';
+const CACHE = 'money-manager-v4';
 const FILES = [
   './',
   './index.html',
@@ -16,6 +16,7 @@ const FILES = [
   './js/charts.js',
   './js/classify.js',
   './js/dashboard.js',
+  './js/migrate.js',
   './js/parse.js',
   './js/report.js',
   './js/store.js',

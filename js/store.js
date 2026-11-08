@@ -38,7 +38,7 @@ export const deleteTx = ids => run('tx', 'readwrite', t => { const s = t.objectS
 export const getKv = key => run('kv', 'readonly', t => t.objectStore('kv').get(key));
 export const setKv = (key, value) => run('kv', 'readwrite', t => { t.objectStore('kv').put(value, key); });
 
-const KV_KEYS = ['rules', 'categories', 'profiles', 'batches', 'deleted'];
+const KV_KEYS = ['rules', 'categories', 'profiles', 'batches', 'deleted', 'budgets', 'taxonomy'];
 
 export async function exportAll() {
   const data = { tx: await allTx() };

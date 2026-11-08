@@ -46,6 +46,24 @@ export function monthSeries(rows, list) {
   return { income, expense };
 }
 
+/** Money moved to savings in each month of `list`, in the same order. */
+export function monthlySavings(rows, list) {
+  return list.map(m => rows.filter(r => r.kind === 'savings' && monthOf(r) === m).reduce((s, r) => s + r.cents, 0));
+}
+
+/** Each month's income as 100%: how much went to spending, to savings, and what was left. */
+export function incomeSplit(rows, list) {
+  const { income, expense } = monthSeries(rows, list);
+  const savings = monthlySavings(rows, list);
+  return list.map((_, i) => {
+    const spent = Math.max(0, expense[i]);
+    const saved = Math.max(0, savings[i]);
+    const left = Math.max(0, income[i] - spent - saved);
+    const pct = cents => (income[i] > 0 ? (cents / income[i]) * 100 : 0);
+    return { income: income[i], expense: spent, savings: saved, left, expensePct: pct(spent), savingsPct: pct(saved), leftPct: pct(left) };
+  });
+}
+
 /** Picks the biggest categories across all time, so each keeps its color in every period. */
 export function categoryStack(rows, list, count) {
   const nameOf = r => r.cat || UNCATEGORIZED;
@@ -80,14 +98,54 @@ export function spendingPace(rows, ym, today) {
 }
 
 /** Largest spending groups in a period, such as merchants or subcategories. */
-export function topBy(rows, prefix, keyOf, count = 8) {
+export function topBy(rows, prefix, keyOf, count = 8, kind = 'expense') {
   const totals = new Map();
   for (const r of rows) {
-    if (r.kind !== 'expense' || !r.date.startsWith(prefix)) continue;
+    if (r.kind !== kind || !r.date.startsWith(prefix)) continue;
     const key = keyOf(r);
     if (key) totals.set(key, (totals.get(key) || 0) + r.cents);
   }
   return [...totals].filter(([, c]) => c > 0).map(([name, cents]) => ({ name, cents })).sort((a, b) => b.cents - a.cents).slice(0, count);
+}
+
+/** The middle month over the last 12 with data, so one big bill doesn't inflate the suggestion. */
+export function typicalMonthly(rows) {
+  const months = monthsPresent(rows).slice(-12);
+  const at = new Map(months.map((m, i) => [m, i]));
+  const median = list => {
+    const sorted = [...list].sort((a, b) => a - b);
+    const mid = sorted.length >> 1;
+    if (!sorted.length) return 0;
+    return sorted.length % 2 ? sorted[mid] : Math.round((sorted[mid - 1] + sorted[mid]) / 2);
+  };
+  const byCategory = new Map();
+  const income = months.map(() => 0);
+  for (const r of rows) {
+    const i = at.get(monthOf(r));
+    if (i === undefined) continue;
+    if (r.kind === 'income') income[i] -= r.cents;
+    else if (r.kind === 'expense' && r.cat) {
+      if (!byCategory.has(r.cat)) byCategory.set(r.cat, months.map(() => 0));
+      byCategory.get(r.cat)[i] += r.cents;
+    }
+  }
+  return { categories: Object.fromEntries([...byCategory].map(([name, list]) => [name, Math.max(0, median(list))])), income: median(income) };
+}
+
+/** Totals across categories that have a budget. `months` is 1 for a month, or the months covered in a year. */
+export function budgetSummary(categories, budgets, months = 1) {
+  let budgeted = 0;
+  let spent = 0;
+  let overCount = 0;
+  for (const [name, monthly] of Object.entries(budgets)) {
+    if (monthly <= 0) continue;
+    const target = monthly * months;
+    const cents = categories.find(c => c.name === name)?.cents || 0;
+    budgeted += target;
+    spent += cents;
+    if (cents > target) overCount++;
+  }
+  return { budgeted, spent, left: budgeted - spent, overCount };
 }
 
 /** `prefix` is a month ('2026-10') or a whole year ('2026'). */
@@ -97,6 +155,8 @@ export function periodSummary(rows, prefix) {
   const income = inMonth.filter(r => r.kind === 'income');
   const spent = expenses.reduce((s, r) => s + r.cents, 0);
   const earned = income.reduce((s, r) => s - r.cents, 0);
+  // Money moved to savings isn't spending, so it stays inside "saved" (earned minus spent).
+  const setAside = inMonth.filter(r => r.kind === 'savings').reduce((s, r) => s + r.cents, 0);
 
   const cats = new Map();
   const accounts = new Map();
@@ -110,7 +170,7 @@ export function periodSummary(rows, prefix) {
     accounts.set(r.account, (accounts.get(r.account) || 0) + r.cents);
   }
   return {
-    spent, earned, saved: earned - spent,
+    spent, earned, saved: earned - spent, setAside,
     count: expenses.length,
     review: inMonth.filter(r => r.needsReview).length,
     transfers: inMonth.filter(r => r.kind === 'transfer').length,
