@@ -1,6 +1,7 @@
 // Uses made-up merchants in each bank's real layout. No real transactions belong in this repo.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync, readdirSync } from 'node:fs';
 import { readExport, parseAmount, parseDate, dateOrder, parseCsv, looksFlipped, guessMapping, normalizeRows } from '../js/parse.js';
 import { classifyAll, learn, suggest, merchantKey, DEFAULT_CATEGORIES as CATS } from '../js/classify.js';
 import { periodSummary, yearMatrix, previousMonth, missingCards, monthChoices, monthSeries, categoryStack, spendingPace, topBy } from '../js/report.js';
@@ -29,6 +30,62 @@ const load = () => [
   readExport(CHASE, 'Chase1234_Activity.csv'),
   readExport(PNC_CARD, 'CreditCardActivityExport.csv'),
 ];
+
+const CAPONE = `Transaction Date,Posted Date,Card No.,Description,Category,Debit,Credit
+2026-10-28,2026-10-28,1234,CREDIT-CASH BACK REWARD,Payment/Credit,,10.00
+2026-10-24,2026-10-26,1234,SANDWICH SHOP 13958-0,Dining,17.80,
+2026-10-11,2026-10-12,1234,CAPITAL ONE AUTOPAY PYMT,Payment/Credit,,100.23
+`;
+
+test('Capital One: debit and credit columns, with the card number in the account name', () => {
+  const f = readExport(CAPONE, '2026-11-08_transaction_download.csv');
+  assert.equal(f.map.id, 'capone-card');
+  assert.deepEqual(f.rows.map(r => r.cents), [-1000, 1780, -10023]);
+  assert.equal(f.rows[0].account, 'Capital One Credit Card 1234');
+  assert.equal(f.problems.length, 0);
+});
+
+test('Capital One: the payment is left out, even with no checking file to pair it with', () => {
+  const rows = classifyAll(readExport(CAPONE, 'x.csv').rows, {}, CATS);
+  assert.equal(rows.find(r => r.desc.includes('AUTOPAY')).kind, 'transfer');
+});
+
+test('Capital One: both sides of a card payment are matched', () => {
+  const checking = `Transaction Date,Transaction Description,Amount,Category
+2026-10-13,CAPITAL ONE CRCARDPMT ACH WEB CA0D8F,- $100.23,Credit Card Payments
+`;
+  const rows = classifyAll([...readExport(CAPONE, 'x.csv').rows, ...readExport(checking, 'y.csv').rows], {}, CATS);
+  const payments = rows.filter(r => r.kind === 'transfer');
+  assert.equal(payments.length, 2);
+  assert.equal(missingCards(rows, '2026-10').length, 0);
+});
+
+test('cash back is income for you to confirm, not a payment or spending', () => {
+  const [cash, food] = classifyAll(readExport(CAPONE, 'x.csv').rows, {}, CATS);
+  assert.equal(cash.kind, 'income');
+  assert.equal(cash.sub, 'Cash back');
+  assert.equal(cash.needsReview, true);
+  assert.equal(food.sub, 'DiningOut');
+  assert.equal(food.needsReview, true);
+});
+
+test('every icon exists at its declared size and is saved for offline use', () => {
+  const root = new URL('../', import.meta.url);
+  const pngSize = file => { const b = readFileSync(new URL(file, root)); return [b.readUInt32BE(16), b.readUInt32BE(20)]; };
+  const manifest = JSON.parse(readFileSync(new URL('manifest.webmanifest', root), 'utf8'));
+  for (const icon of manifest.icons) {
+    const [w, h] = icon.sizes.split('x').map(Number);
+    assert.deepEqual(pngSize(icon.src), [w, h], icon.src);
+  }
+  for (const size of ['192x192', '512x512']) {
+    for (const purpose of ['any', 'maskable']) {
+      assert.ok(manifest.icons.some(i => i.sizes === size && i.purpose === purpose), `${size} ${purpose}`);
+    }
+  }
+  assert.deepEqual(pngSize('icons/apple-touch-icon.png'), [180, 180]);
+  const sw = readFileSync(new URL('sw.js', root), 'utf8');
+  for (const f of readdirSync(new URL('icons/', root))) assert.ok(sw.includes(`./icons/${f}`), `${f} missing from sw.js`);
+});
 
 test('amounts in every style the banks use', () => {
   assert.equal(parseAmount('- $1413.82'), -141382);

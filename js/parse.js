@@ -18,6 +18,12 @@ export const PROFILES = [
     amountMode: 'signed', amount: 'Amount', spendSign: -1, category: 'Category', type: 'Type',
   },
   {
+    id: 'capone-card', account: 'Capital One Credit Card', accountType: 'card',
+    headers: ['transaction date', 'posted date', 'card no.', 'description', 'category', 'debit', 'credit'],
+    date: 'Transaction Date', desc: 'Description',
+    amountMode: 'debitCredit', debit: 'Debit', credit: 'Credit', category: 'Category', cardColumn: 'Card No.',
+  },
+  {
     id: 'pnc-card', account: 'PNC Credit Card', accountType: 'card',
     headers: ['date', 'description', 'amount'],
     date: 'Date', desc: 'Description',
@@ -207,12 +213,14 @@ export function normalizeRows(dataRows, headers, map) {
       problems.push({ line: i + 1, text: cells.join(', ') });
       return;
     }
-    const base = `${map.account}|${date}|${cents}|${desc.toUpperCase()}`;
+    const card = map.cardColumn ? String(cells[at[map.cardColumn]] ?? '').trim() : '';
+    const account = card ? `${map.account} ${card}` : map.account;
+    const base = `${account}|${date}|${cents}|${desc.toUpperCase()}`;
     const n = (seen.get(base) || 0) + 1;
     seen.set(base, n);
     rows.push({
       id: `${base}|${n}`,
-      account: map.account,
+      account,
       accountType: map.accountType,
       date, desc, cents,
       bankCategory: map.category ? String(cells[at[map.category]] ?? '').trim() : '',

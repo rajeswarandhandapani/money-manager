@@ -40,7 +40,7 @@ export function merchantKey(desc) {
 /** Always the bank's wording, so a description you reworded still matches next month's export. */
 export const merchantOf = row => merchantKey(row.origDesc || row.desc);
 
-const CARD_PAYMENT =/CRCARDPMT|CREDIT CRD AUTOPAY|CARDMEMBER SERV|CITI AUTOPAY|AUTOMATIC PAYMENT|THANK YOU FOR YOUR PMT|PAYMENT,? THANK YOU|CAPITAL ONE (MOBILE|ONLINE) PMT|AUTOPAY PAYMENT/i;
+const CARD_PAYMENT =/CRCARDPMT|CREDIT CRD AUTOPAY|CARDMEMBER SERV|CITI AUTOPAY|AUTOMATIC PAYMENT|THANK YOU FOR YOUR PMT|PAYMENT,? THANK YOU|CAPITAL ONE (MOBILE|ONLINE) PMT|AUTOPAY (PAYMENT|PYMT)/i;
 
 export function isCardPayment(row) {
   if (/^credit card payments?$/i.test(row.bankCategory || '')) return true;
@@ -54,6 +54,7 @@ const BANK_HINTS = {
   groceries: ['Food', 'Groceries(Meat,Fish,Produce)'],
   'food & drink': ['Dining', 'DiningOut'],
   'food and drink': ['Dining', 'DiningOut'],
+  dining: ['Dining', 'DiningOut'],
   restaurants: ['Dining', 'DiningOut'],
   utilities: ['HousingUtilities', 'Electricity'],
   cable: ['HousingUtilities', 'Internet'],
@@ -134,6 +135,9 @@ export function classify(row, rules, categories) {
   const learned = suggest(rules, row.desc);
   if (learned?.sure && learned.kind) return finish(row, learned.kind, learned.cat, learned.sub, false);
   if (isCardPayment(row)) return finish(row, 'transfer', '', '', false);
+  if (row.cents < 0 && row.accountType === 'card' && /CASH ?BACK|REWARD/i.test(row.desc)) {
+    return finish(row, 'income', 'Income', 'Cash back', true);
+  }
 
   if (row.cents < 0 && row.accountType === 'checking') {
     return finish(row, 'income', 'Income', 'Other', true);
@@ -156,7 +160,7 @@ function finish(row, kind, cat, sub, needsReview) {
 export function pairTransfers(rows, windowDays = 7) {
   const day = d => Date.parse(`${d}T00:00:00Z`) / 86400000;
   const used = new Set();
-  const incoming = rows.filter(r => r.accountType === 'card' && r.cents < 0 && /PMT|PAYMENT/i.test(r.desc));
+  const incoming = rows.filter(r => r.accountType === 'card' && r.cents < 0 && /PMT|PYMT|PAYMENT/i.test(r.desc));
   for (const inn of incoming) {
     const out = rows.find(r => !used.has(r) && r.accountType === 'checking' && r.account !== inn.account
       && r.cents === -inn.cents && Math.abs(day(r.date) - day(inn.date)) <= windowDays);

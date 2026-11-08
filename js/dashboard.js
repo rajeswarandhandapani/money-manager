@@ -106,7 +106,7 @@ export function viewDashboard(S, act) {
         h('button', { 'data-scope': id, 'aria-pressed': String(S.scope === id), onclick: () => setScope(id) }, text))),
       isYear ? picker('Year', years, S.year, y => y, go('year'), 'year') : picker('Month', months, S.month, monthLabel, go('month'), 'month')))];
 
-  const rate = s.earned > 0 ? `${Math.round((s.saved / s.earned) * 100)}% of income` : null;
+  const rate = s.earned > 0 && s.saved >= 0 ? `${Math.round((s.saved / s.earned) * 100)}% of income` : null;
   if (isYear) {
     const active = new Set(S.tx.filter(r => r.kind !== 'transfer' && r.date.startsWith(key)).map(r => r.date.slice(0, 7))).size;
     out.push(h('div', { class: 'tiles' },
@@ -127,7 +127,8 @@ export function viewDashboard(S, act) {
 
     const missing = missingCards(S.tx, S.month);
     if (missing.length) out.push(h('p', { class: 'notice' }, `You paid ${missing.join(' and ')} this month, but no export from ${missing.length > 1 ? 'those cards' : 'that card'} is imported, so ${missing.length > 1 ? 'their' : 'its'} spending is missing.`));
-    if (!s.earned && s.spent) out.push(h('p', { class: 'notice' }, 'No income is recorded for this month.'));
+    const realIncome = S.tx.some(r => r.kind === 'income' && r.date.startsWith(key) && r.sub !== 'Cash back');
+    if (!realIncome && s.spent) out.push(h('p', { class: 'notice' }, s.earned ? 'Only cash back is recorded as income for this month.' : 'No income is recorded for this month.'));
   }
   if (s.review) out.push(h('button', { class: 'review-link', onclick: () => act.goTx({ month: key, show: 'review' }) }, `⚑ ${s.review} transaction${s.review > 1 ? 's' : ''} need a look`));
 
