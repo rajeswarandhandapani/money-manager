@@ -1,6 +1,6 @@
-import { readExport, normalizeRows, looksFlipped } from './parse.js';
+import { readExport, normalizeRows, looksFlipped, parseAmount } from './parse.js';
 import { classifyAll, learn, merchantKey, isComplete, DEFAULT_CATEGORIES } from './classify.js';
-import { MONTH_NAMES, monthOf, monthsPresent, monthLabel, previousMonth, monthSummary, yearMatrix, missingCards, UNCATEGORIZED } from './report.js';
+import { MONTH_NAMES, monthOf, monthsPresent, monthChoices, monthLabel, previousMonth, monthSummary, yearMatrix, missingCards, UNCATEGORIZED } from './report.js';
 import { readWorkbook } from './workbook.js';
 import * as store from './store.js';
 
@@ -725,14 +725,113 @@ function drawTxList() {
     ...(rows.length ? [] : [h('p', { class: 'muted empty' }, 'Nothing matches.')]));
 }
 
+function localToday() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+function addTransaction() {
+  const today = localToday();
+  const month = S.filter.month;
+  const draft = { kind: 'expense', date: month && !today.startsWith(month) ? `${month}-01` : today, desc: '', amount: '', cat: '', sub: '', account: 'Cash' };
+  const accounts = [...new Set(['Cash', ...S.tx.map(r => r.account).filter(a => a !== 'Spreadsheet')])];
+  const cents = () => parseAmount(draft.amount);
+  const valid = () => /^\d{4}-\d{2}-\d{2}$/.test(draft.date) && draft.desc.trim() && !/-|\(/.test(draft.amount) && cents() > 0 && isComplete(draft) && (draft.kind === 'expense' || draft.sub);
+
+  return dialog(close => {
+    const add = h('button', { class: 'primary', id: 'add-confirm', disabled: true, onclick: async () => {
+      if (!valid()) return;
+      const row = {
+        id: `Manual|${crypto.randomUUID()}`,
+        account: draft.account,
+        accountType: S.tx.find(r => r.account === draft.account)?.accountType || 'cash',
+        date: draft.date,
+        desc: draft.desc.trim(),
+        cents: draft.kind === 'income' ? -cents() : cents(),
+        bankCategory: '', bankType: '',
+        kind: draft.kind, cat: draft.cat, sub: draft.sub,
+        needsReview: false, edited: true,
+      };
+      await store.putTx([row]);
+      S.tx.push(row);
+      S.filter = { ...S.filter, month: monthOf(row) };
+      pickDefaults();
+      close(true);
+      render();
+      toast(`Added ${row.desc}.`);
+    } }, 'Add transaction');
+    const check = () => { add.disabled = !valid(); };
+    const choices = h('div', { class: 'grid2' });
+
+    const askNew = async (title, apply) => {
+      const name = await askText(title);
+      if (name) await apply(name);
+      drawChoices();
+      check();
+    };
+    const onCat = value => {
+      if (value === NEW) {
+        return askNew('New category', async name => {
+          if (!S.categories[name]) await txCtx.addCategory(name);
+          draft.cat = name; draft.sub = '';
+        });
+      }
+      draft.cat = value;
+      const subs = S.categories[value] || [];
+      draft.sub = subs.length === 1 ? subs[0] : '';
+      drawChoices(); check();
+    };
+    const onSub = value => {
+      if (value === NEW) {
+        return askNew(draft.kind === 'income' ? 'New income source' : `New subcategory of ${draft.cat}`, async name => {
+          if (draft.kind === 'expense') await txCtx.addSub(draft.cat, name);
+          draft.sub = name;
+        });
+      }
+      draft.sub = value;
+      check();
+    };
+    function drawChoices() {
+      if (draft.kind === 'income') {
+        const sources = incomeSources();
+        choices.replaceChildren(h('label', { class: 'field' }, 'Income source',
+          select('Income source', draft.sub, [...sources, ...(sources.includes(draft.sub) ? [] : [draft.sub]), [NEW, '+ New source…']], onSub)));
+        return;
+      }
+      const subs = S.categories[draft.cat] || [];
+      choices.replaceChildren(
+        h('label', { class: 'field' }, 'Category', select('Category', draft.cat, [['', 'Choose category…'], ...Object.keys(S.categories), [NEW, '+ New category…']], onCat)),
+        h('label', { class: 'field' }, 'Subcategory', select('Subcategory', draft.sub, [['', draft.cat ? 'Choose subcategory…' : '—'], ...subs, ...(subs.includes(draft.sub) || !draft.sub ? [] : [draft.sub]), ...(draft.cat ? [[NEW, '+ New subcategory…']] : [])], onSub, { disabled: !draft.cat })));
+    }
+    drawChoices();
+
+    return h('div', { class: 'stack' },
+      h('h2', {}, 'Add transaction'),
+      h('div', { class: 'grid2' },
+        h('label', { class: 'field' }, 'Date', h('input', { type: 'date', 'aria-label': 'Date', value: draft.date, oninput: e => { draft.date = e.target.value; check(); } })),
+        h('label', { class: 'field' }, 'Amount', h('input', { inputmode: 'decimal', placeholder: '0.00', 'aria-label': 'Amount', autocomplete: 'off', oninput: e => { draft.amount = e.target.value; check(); } }))),
+      h('label', { class: 'field' }, 'Description', h('input', { 'aria-label': 'Description', autocomplete: 'off', oninput: e => { draft.desc = e.target.value; check(); } })),
+      h('div', { class: 'grid2' },
+        h('label', { class: 'field' }, 'Type', select('Type', draft.kind, [['expense', 'Expense'], ['income', 'Income']], v => {
+          draft.kind = v;
+          draft.cat = v === 'income' ? 'Income' : '';
+          draft.sub = v === 'income' ? 'Other' : '';
+          drawChoices(); check();
+        })),
+        h('label', { class: 'field' }, 'Account', select('Account', draft.account, accounts, v => { draft.account = v; }))),
+      choices,
+      h('div', { class: 'row end' }, h('button', { class: 'ghost', onclick: () => close(null) }, 'Cancel'), add));
+  });
+}
+
 function viewTx() {
   const f = S.filter;
-  const months = [...new Set(S.tx.map(monthOf))].sort().reverse();
+  const months = monthChoices(S.tx, localToday());
   const accounts = [...new Set(S.tx.map(r => r.account))].sort();
   const set = key => v => { f[key] = v; f.limit = 100; drawTxList(); };
   setTimeout(drawTxList);
   return [
-    h('h1', {}, 'Transactions'),
+    h('div', { class: 'row between title' }, h('h1', {}, 'Transactions'), h('button', { class: 'primary', id: 'add-tx', onclick: addTransaction }, '+ Add transaction')),
     h('div', { class: 'filters' },
       h('input', { type: 'search', placeholder: 'Search', 'aria-label': 'Search transactions', value: f.q || '', oninput: e => set('q')(e.target.value) }),
       select('Month', f.month || '', [['', 'All months'], ...months.map(m => [m, monthLabel(m)])], set('month')),

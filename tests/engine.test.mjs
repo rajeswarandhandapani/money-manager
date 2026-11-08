@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readExport, parseAmount, parseDate, dateOrder, parseCsv, looksFlipped, guessMapping, normalizeRows } from '../js/parse.js';
 import { classifyAll, learn, suggest, merchantKey, DEFAULT_CATEGORIES as CATS } from '../js/classify.js';
-import { monthSummary, yearMatrix, previousMonth, missingCards } from '../js/report.js';
+import { monthSummary, yearMatrix, previousMonth, missingCards, monthChoices } from '../js/report.js';
 
 const CHECKING = `Transaction Date,Transaction Description,Amount,Category
 2026-10-30,CHASE CREDIT CRD AUTOPAY ACH DEBIT xxxxxxxxxxx0001,- $100.5,Credit Card Payments
@@ -180,6 +180,15 @@ test('payments to people are always flagged unless you pinned that person', () =
   assert.equal(suggest(rules, 'ZELLE TO PERSON B'), null);
   learn(rules, { id: 'x', desc: 'ZELLE TO PERSON A', kind: 'expense', cat: 'Gifts', sub: 'GeneralGifting' }, { manual: true });
   assert.equal(suggest(rules, 'ZELLE TO PERSON A').sure, true);
+});
+
+test('month choices include months with no data', () => {
+  const months = monthChoices([{ date: '2026-03-05' }], '2026-11-08');
+  assert.equal(months[0], '2026-11');
+  assert.equal(months[months.length - 1], '2026-01');
+  assert.equal(months.length, 11);
+  assert.deepEqual(monthChoices([], '2026-02-01'), ['2026-02', '2026-01']);
+  assert.equal(monthChoices([{ date: '2025-11-05' }], '2026-02-01').pop(), '2025-01');
 });
 
 test('warns when a card you paid has no export that month', () => {

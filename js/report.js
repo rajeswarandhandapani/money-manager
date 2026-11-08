@@ -21,6 +21,17 @@ export function previousMonth(ym) {
   return `${y}-${String(m).padStart(2, '0')}`;
 }
 
+/** Every month from January of the earliest year through the current or latest month, newest first. */
+export function monthChoices(rows, today) {
+  const seen = rows.map(monthOf).sort();
+  const current = today.slice(0, 7);
+  const first = `${(seen[0] && seen[0] < current ? seen[0] : current).slice(0, 4)}-01`;
+  const last = seen.length && seen[seen.length - 1] > current ? seen[seen.length - 1] : current;
+  const out = [];
+  for (let m = last; m >= first; m = previousMonth(m)) out.push(m);
+  return out;
+}
+
 export function monthSummary(rows, ym) {
   const inMonth = rows.filter(r => monthOf(r) === ym);
   const expenses = inMonth.filter(r => r.kind === 'expense');
