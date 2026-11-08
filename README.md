@@ -27,7 +27,10 @@ Plain HTML, CSS and JavaScript modules, with no framework, build step or third-p
 | --- | --- |
 | `js/parse.js` | CSV reading, bank formats, dates and amounts |
 | `js/classify.js` | Transfers, categories, learning from corrections |
-| `js/report.js` | Monthly and yearly totals |
+| `js/report.js` | Monthly and yearly totals, and the numbers behind each chart |
+| `js/dashboard.js` | The landing page |
+| `js/charts.js` | Chart drawing |
+| `js/ui.js` | Shared page helpers |
 | `js/workbook.js` | Reads the existing `.xlsx` using browser built-ins |
 | `js/store.js` | IndexedDB storage and encrypted backups (AES-GCM, PBKDF2) |
 | `js/app.js` | Screens |

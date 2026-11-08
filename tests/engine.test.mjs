@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readExport, parseAmount, parseDate, dateOrder, parseCsv, looksFlipped, guessMapping, normalizeRows } from '../js/parse.js';
 import { classifyAll, learn, suggest, merchantKey, DEFAULT_CATEGORIES as CATS } from '../js/classify.js';
-import { monthSummary, yearMatrix, previousMonth, missingCards, monthChoices } from '../js/report.js';
+import { periodSummary, yearMatrix, previousMonth, missingCards, monthChoices, monthSeries, categoryStack, spendingPace, topBy } from '../js/report.js';
 
 const CHECKING = `Transaction Date,Transaction Description,Amount,Category
 2026-10-30,CHASE CREDIT CRD AUTOPAY ACH DEBIT xxxxxxxxxxx0001,- $100.5,Credit Card Payments
@@ -182,6 +182,51 @@ test('payments to people are always flagged unless you pinned that person', () =
   assert.equal(suggest(rules, 'ZELLE TO PERSON A').sure, true);
 });
 
+test('a reworded description still teaches the bank merchant name', () => {
+  const rules = {};
+  learn(rules, { id: 'a', desc: 'School shoes', origDesc: 'SHOE SHOP #12', kind: 'expense', cat: 'Children', sub: 'KidsShoes' }, { manual: true });
+  assert.equal(suggest(rules, 'SHOE SHOP #99').sub, 'KidsShoes');
+  assert.equal(rules['SCHOOL SHOES'], undefined);
+});
+
+const CHART_ROWS = [
+  { date: '2026-09-30', kind: 'expense', cents: 900, cat: 'Rent', sub: 'Home', desc: 'LANDLORD' },
+  { date: '2026-10-01', kind: 'expense', cents: 1000, cat: 'Rent', sub: 'Home', desc: 'LANDLORD' },
+  { date: '2026-10-03', kind: 'expense', cents: 300, cat: 'Food', sub: 'Grocery', desc: 'MARKET' },
+  { date: '2026-10-03', kind: 'expense', cents: -100, cat: 'Food', sub: 'Grocery', desc: 'MARKET' },
+  { date: '2026-10-05', kind: 'expense', cents: 50, cat: 'Toys', sub: 'Lego', desc: 'SHOP' },
+  { date: '2026-10-06', kind: 'income', cents: -5000, cat: 'Income', sub: 'Salary', desc: 'PAY' },
+  { date: '2026-10-07', kind: 'transfer', cents: 9999, cat: '', sub: '', desc: 'CARD' },
+];
+
+test('chart series: income and expense by month, transfers left out', () => {
+  assert.deepEqual(monthSeries(CHART_ROWS, ['2026-09', '2026-10']), { income: [0, 5000], expense: [900, 1250] });
+});
+
+test('chart series: categories outside the biggest fold into Other, order is stable', () => {
+  const s = categoryStack(CHART_ROWS, ['2026-09', '2026-10'], 2);
+  assert.deepEqual(s.names, ['Rent', 'Food']);
+  assert.deepEqual(s.values, [[900, 1000], [0, 200]]);
+  assert.deepEqual(s.other, [0, 50]);
+  assert.deepEqual(categoryStack(CHART_ROWS, ['2026-09'], 2).names, ['Rent', 'Food']);
+});
+
+test('spending pace runs the whole month, and stops at today for the current one', () => {
+  const full = spendingPace(CHART_ROWS, '2026-10', '2026-11-08');
+  assert.equal(full.length, 31);
+  assert.deepEqual(full.slice(0, 5), [1000, 1000, 1200, 1200, 1250]);
+  assert.equal(full[30], 1250);
+  // The $50 dated after "today" lands on the last day shown, so the line still ends at the month's total.
+  assert.deepEqual(spendingPace(CHART_ROWS, '2026-10', '2026-10-04'), [1000, 1000, 1200, 1250]);
+  assert.equal(spendingPace([], '2026-02', '2026-11-08').length, 28);
+});
+
+test('top lists rank spending and skip anything netted to zero or below', () => {
+  const rows = [...CHART_ROWS, { date: '2026-10-08', kind: 'expense', cents: -50, cat: 'Toys', sub: 'Lego', desc: 'SHOP' }];
+  assert.deepEqual(topBy(rows, '2026-10', r => r.desc), [{ name: 'LANDLORD', cents: 1000 }, { name: 'MARKET', cents: 200 }]);
+  assert.equal(topBy(rows, '2026-10', r => r.desc, 1).length, 1);
+});
+
 test('month choices include months with no data', () => {
   const months = monthChoices([{ date: '2026-03-05' }], '2026-11-08');
   assert.equal(months[0], '2026-11');
@@ -208,10 +253,12 @@ test('report totals exclude transfers and keep years apart', () => {
     { date: '2026-10-05', kind: 'income', cents: -5000, cat: 'Income', sub: 'Salary', account: 'X' },
     { date: '2027-10-05', kind: 'expense', cents: 700, cat: 'Food', sub: 'A', account: 'X' },
   ];
-  const s = monthSummary(rows, '2026-10');
+  const s = periodSummary(rows, '2026-10');
   assert.equal(s.spent, 750);
   assert.equal(s.earned, 5000);
   assert.equal(s.saved, 4250);
+  assert.equal(periodSummary(rows, '2026').spent, 750);
+  assert.equal(periodSummary(rows, '2027').spent, 700);
   const y = yearMatrix(rows, '2026', { Food: [] });
   assert.equal(y.table[0].months[9], 750);
   assert.equal(y.spent, 750);

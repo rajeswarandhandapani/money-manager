@@ -1,37 +1,16 @@
 import { readExport, normalizeRows, looksFlipped, parseAmount } from './parse.js';
-import { classifyAll, learn, merchantKey, isComplete, DEFAULT_CATEGORIES } from './classify.js';
-import { MONTH_NAMES, monthOf, monthsPresent, monthChoices, monthLabel, previousMonth, monthSummary, yearMatrix, missingCards, UNCATEGORIZED } from './report.js';
+import { classifyAll, learn, merchantOf, isComplete, DEFAULT_CATEGORIES } from './classify.js';
+import { MONTH_NAMES, monthOf, monthsPresent, monthChoices, monthLabel, UNCATEGORIZED } from './report.js';
 import { readWorkbook } from './workbook.js';
+import { viewDashboard } from './dashboard.js';
+import { h, select, fmt, localToday } from './ui.js';
 import * as store from './store.js';
 
-const money = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' });
-const fmt = cents => money.format(cents / 100);
-const fmtShort = cents => Math.abs(cents) >= 100000 ? `$${(cents / 100000).toFixed(1).replace(/\.0$/, '')}k` : `$${Math.round(cents / 100)}`;
 const prettyDate = iso => `${MONTH_NAMES[+iso.slice(5, 7) - 1].slice(0, 3)} ${+iso.slice(8)}, ${iso.slice(0, 4)}`;
 
-const S = { tx: [], rules: {}, categories: DEFAULT_CATEGORIES, profiles: [], batches: [], deleted: new Set(), drafts: new Map(), view: 'report', month: null, year: null, pending: null, filter: {}, openCat: null };
+const S = { tx: [], rules: {}, categories: DEFAULT_CATEGORIES, profiles: [], batches: [], deleted: new Set(), drafts: new Map(), view: 'dashboard', scope: 'month', month: null, year: null, pending: null, filter: {}, openCat: null };
 const saveDeleted = () => store.setKv('deleted', [...S.deleted]);
 const main = document.querySelector('#main');
-
-/** Builds DOM safely: bank text only ever becomes text nodes, never HTML. */
-function h(tag, props = {}, ...children) {
-  const el = document.createElement(tag);
-  for (const [k, v] of Object.entries(props || {})) {
-    if (k.startsWith('on')) el.addEventListener(k.slice(2), v);
-    else if (k === 'class') el.className = v;
-    else if (v === true) el.setAttribute(k, '');
-    else if (v !== false && v != null) el.setAttribute(k, v);
-  }
-  for (const c of children.flat()) if (c != null && c !== false) el.append(c.nodeType ? c : String(c));
-  return el;
-}
-
-function svgEl(tag, attrs = {}, ...children) {
-  const el = document.createElementNS('http://www.w3.org/2000/svg', tag);
-  for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v);
-  el.append(...children);
-  return el;
-}
 
 let toastTimer;
 function toast(message, action) {
@@ -86,19 +65,18 @@ function incomeSources() {
   return [...new Set(['Salary', 'Other', ...S.tx.filter(r => r.kind === 'income' && r.sub).map(r => r.sub)])];
 }
 
-function select(label, value, options, onchange, extra = {}) {
-  const el = h('select', { 'aria-label': label, ...extra, onchange: () => onchange(el.value) },
-    options.map(o => {
-      const [v, text] = Array.isArray(o) ? o : [o, o];
-      return h('option', { value: v, selected: v === value }, text);
-    }));
-  return el;
-}
-
 function amountText(row) {
   if (row.kind === 'income') return `+${fmt(-row.cents)}`;
   if (row.cents < 0) return `−${fmt(-row.cents)}`;
   return fmt(row.cents);
+}
+
+/** Changes what you see. The row's id and the bank's wording stay, so duplicates are still caught. */
+function applyRename(row, next) {
+  const original = row.origDesc || row.desc;
+  if (row.id.startsWith('Manual|') || next === original) delete row.origDesc;
+  else row.origDesc = original;
+  row.desc = next;
 }
 
 function txRow(row, ctx) {
@@ -152,12 +130,33 @@ function txRow(row, ctx) {
     controls.push(h('span', { class: 'muted not-counted' }, 'Left out of all totals'));
   }
 
+  const title = h('div', { class: 'desc-line' }, h('strong', {}, row.desc));
+  const startEdit = () => {
+    const input = h('input', { value: row.desc, 'aria-label': 'New description', maxlength: 200, autocomplete: 'off', onkeydown: e => {
+      if (e.key === 'Enter') { e.preventDefault(); save(); }
+      if (e.key === 'Escape') { e.preventDefault(); redraw(); }
+    } });
+    const save = async () => {
+      const next = input.value.replace(/\s+/g, ' ').trim();
+      if (!next) { toast('A description can’t be empty.'); input.focus(); return; }
+      if (next !== row.desc) await ctx.rename(row, next);
+      redraw();
+    };
+    title.replaceWith(h('div', { class: 'desc-edit' }, input,
+      h('button', { class: 'primary small', onclick: save }, 'Save'),
+      h('button', { class: 'ghost small', onclick: redraw }, 'Cancel')));
+    input.focus();
+    input.select();
+  };
+  title.append(h('button', { class: 'link edit-desc', 'aria-label': 'Edit description', onclick: startEdit }, 'Edit'));
+
   const canConfirm = row.needsReview && isComplete(row);
   const el = h('article', { class: `tx${row.needsReview ? ' review' : ''}${row.kind === 'transfer' ? ' off' : ''}` },
     h('div', { class: 'tx-head' },
       h('div', { class: 'tx-desc' },
-        h('strong', {}, row.desc),
-        h('span', { class: 'muted' }, [prettyDate(row.date), row.account, row.bankCategory && `bank says: ${row.bankCategory}`].filter(Boolean).join(' · '))),
+        title,
+        h('span', { class: 'muted' }, [prettyDate(row.date), row.account, row.bankCategory && `bank says: ${row.bankCategory}`].filter(Boolean).join(' · ')),
+        row.origDesc && h('span', { class: 'muted small-text' }, `originally: ${row.origDesc}`)),
       h('div', { class: `tx-amt${row.kind === 'income' ? ' in' : ''}` }, amountText(row))),
     h('div', { class: 'tx-controls' }, controls,
       !isComplete(row) && h('span', { class: 'chip' }, `⚑ Choose ${row.cat ? 'a subcategory' : 'a category and subcategory'} to save`),
@@ -169,9 +168,9 @@ function txRow(row, ctx) {
 }
 
 function offerApplyToOthers(row, list, apply) {
-  const key = merchantKey(row.desc);
+  const key = merchantOf(row);
   const sameMerchant = other => other === key || other.startsWith(`${key} `) || key.startsWith(`${other} `);
-  const others = list.filter(r => r !== row && !r.edited && sameMerchant(merchantKey(r.desc)) && (r.kind !== row.kind || r.cat !== row.cat || r.sub !== row.sub));
+  const others = list.filter(r => r !== row && !r.edited && sameMerchant(merchantOf(r)) && (r.kind !== row.kind || r.cat !== row.cat || r.sub !== row.sub));
   if (!isComplete(row) || !others.length) return;
   toast(`Remembered for ${key}.`, { label: `Apply to ${others.length} other${others.length > 1 ? 's' : ''}`, run: () => apply(others) });
 }
@@ -179,7 +178,7 @@ function offerApplyToOthers(row, list, apply) {
 /* ---------- Import ---------- */
 
 function newPending() {
-  return { files: [], edits: new Map(), removed: new Set(), rules: structuredClone(S.rules), rows: [], tab: 'review', els: new Map() };
+  return { files: [], edits: new Map(), renames: new Map(), removed: new Set(), rules: structuredClone(S.rules), rows: [], tab: 'review', els: new Map() };
 }
 
 function pendingCategories() {
@@ -208,6 +207,7 @@ function rebuildPending() {
   for (const r of classified) {
     const e = P.edits.get(r.id);
     if (e) Object.assign(r, { kind: e.kind, cat: e.cat, sub: e.sub, edited: true, needsReview: !isComplete(e) });
+    if (P.renames.has(r.id)) applyRename(r, P.renames.get(r.id));
   }
   P.rows = classified.sort((a, b) => a.date.localeCompare(b.date));
   P.history = P.files.filter(f => f.workbook).flatMap(f => f.rows.filter(r => !existing.has(r.id) && !S.deleted.has(r.id)));
@@ -347,6 +347,10 @@ const pendingCtx = {
   categories: pendingCategories,
   addCategory: async name => { const c = pendingCategories(); c[name] = []; if (c === S.categories) await saveCategories(c); },
   addSub: async (cat, sub) => { const c = pendingCategories(); c[cat] = [...(c[cat] || []), sub]; if (c === S.categories) await saveCategories(c); },
+  rename(row, next) {
+    S.pending.renames.set(row.id, next);
+    applyRename(row, next);
+  },
   remove(row) {
     const P = S.pending;
     P.removed.add(row.id);
@@ -365,12 +369,12 @@ const pendingCtx = {
   },
   changed(row) {
     const P = S.pending;
-    P.edits.set(row.id, { desc: row.desc, kind: row.kind, cat: row.cat, sub: row.sub });
+    P.edits.set(row.id, { desc: row.origDesc || row.desc, kind: row.kind, cat: row.cat, sub: row.sub });
     updateImportCounts();
     offerApplyToOthers(row, P.rows, others => {
       for (const r of others) {
         Object.assign(r, { kind: row.kind, cat: row.cat, sub: row.sub, needsReview: false, edited: true });
-        P.edits.set(r.id, { desc: r.desc, kind: r.kind, cat: r.cat, sub: r.sub });
+        P.edits.set(r.id, { desc: r.origDesc || r.desc, kind: r.kind, cat: r.cat, sub: r.sub });
       }
       renderReviewList();
       updateImportCounts();
@@ -456,8 +460,8 @@ async function savePending() {
 
   const latest = P.rows.length ? P.rows.map(monthOf).sort().pop() : monthsPresent(S.tx).pop();
   S.pending = null;
-  S.month = latest; S.year = latest?.slice(0, 4);
-  S.view = 'report';
+  S.month = latest; S.year = latest?.slice(0, 4); S.scope = 'month'; S.openCat = null;
+  S.view = 'dashboard';
   render();
   toast(`Saved ${rows.length} transactions.`);
 }
@@ -496,150 +500,6 @@ function viewImport() {
   return out;
 }
 
-/* ---------- Reports ---------- */
-
-function monthPicker() {
-  const months = monthsPresent(S.tx);
-  const i = months.indexOf(S.month);
-  const go = m => { S.month = m; S.openCat = null; render(); };
-  return h('div', { class: 'picker' },
-    h('button', { class: 'ghost icon', 'aria-label': 'Earlier month', disabled: i <= 0, onclick: () => go(months[i - 1]) }, '‹'),
-    select('Month', S.month, [...months].reverse().map(m => [m, monthLabel(m)]), go, { id: 'month' }),
-    h('button', { class: 'ghost icon', 'aria-label': 'Later month', disabled: i >= months.length - 1, onclick: () => go(months[i + 1]) }, '›'));
-}
-
-function tile(label, value, note, id) {
-  const isWord = !/\d/.test(value);
-  return h('div', { class: 'tile', id }, h('span', { class: 'muted' }, label), h('b', { class: isWord ? 'word' : '' }, value), note ? h('span', { class: 'muted small-text' }, note) : false);
-}
-
-const noData = () => [h('h1', {}, 'Money Manager'), h('section', { class: 'card stack' }, h('p', {}, 'No transactions yet.'), h('button', { class: 'primary', onclick: () => { S.view = 'import'; render(); } }, 'Import your first files'))];
-
-function viewReport() {
-  if (!monthsPresent(S.tx).length) return noData();
-  const s = monthSummary(S.tx, S.month);
-  const prev = monthSummary(S.tx, previousMonth(S.month));
-  const delta = prev.count ? s.spent - prev.spent : null;
-  const deltaNote = delta === null ? null : `${delta > 0 ? 'up' : 'down'} ${fmt(Math.abs(delta))} from ${MONTH_NAMES[+previousMonth(S.month).slice(5) - 1]}`;
-  const out = [h('div', { class: 'row between title' }, h('h1', {}, 'Monthly report'), monthPicker()),
-    h('div', { class: 'tiles' },
-      tile('Spent', fmt(s.spent), deltaNote, 'kpi-spent'),
-      tile('Income', fmt(s.earned), null, 'kpi-income'),
-      tile('Saved', fmt(s.saved), null, 'kpi-saved'),
-      tile('Transactions', String(s.count), s.transfers ? `${s.transfers} transfers left out` : null, 'kpi-count'))];
-
-  const missing = missingCards(S.tx, S.month);
-  const notes = [];
-  if (missing.length) notes.push(`You paid ${missing.join(' and ')} this month, but no export from ${missing.length > 1 ? 'those cards' : 'that card'} is imported, so ${missing.length > 1 ? 'their' : 'its'} spending is missing.`);
-  if (!s.earned && s.spent) notes.push('No income is recorded for this month.');
-  out.push(...notes.map(n => h('p', { class: 'notice' }, n)));
-  if (s.review) out.push(h('button', { class: 'review-link', onclick: () => { S.filter = { month: S.month, show: 'review' }; S.view = 'tx'; render(); } }, `⚑ ${s.review} transaction${s.review > 1 ? 's' : ''} need a look`));
-
-  const max = Math.max(1, ...s.categories.map(c => c.cents));
-  const rows = s.categories.map(c => {
-    const open = S.openCat === c.name;
-    return h('div', { class: 'cat' },
-      h('button', { class: 'bar-row', 'aria-expanded': String(open), onclick: () => { S.openCat = open ? null : c.name; render(); } },
-        h('span', { class: 'bar-label' }, c.name),
-        h('span', { class: 'bar-track' }, barFill(c.cents / max)),
-        h('span', { class: 'bar-value' }, fmt(c.cents)),
-        h('span', { class: 'bar-pct muted' }, s.spent ? `${Math.round(c.cents / s.spent * 100)}%` : '')),
-      open && categoryDetail(c));
-  });
-  out.push(h('section', { class: 'card' }, h('h2', {}, 'By category'), rows.length ? h('div', {}, rows) : h('p', { class: 'muted' }, 'No expenses this month.')));
-  if (s.accounts.length) {
-    out.push(h('section', { class: 'card' }, h('h2', {}, 'By account'), s.accounts.map(a => h('div', { class: 'row between line' }, h('span', {}, a.name), h('b', { class: 'num' }, fmt(a.cents))))));
-  }
-  return out;
-}
-
-function barFill(share) {
-  const el = h('span', { class: 'bar-fill' });
-  el.style.width = `${Math.max(0, share * 100)}%`;
-  return el;
-}
-
-function categoryDetail(c) {
-  const rows = S.tx.filter(r => monthOf(r) === S.month && r.kind === 'expense' && (r.cat || UNCATEGORIZED) === c.name).sort((a, b) => b.cents - a.cents);
-  return h('div', { class: 'detail' },
-    c.subs.map(sub => h('div', { class: 'row between line' }, h('span', {}, sub.name), h('b', { class: 'num' }, fmt(sub.cents)))),
-    h('button', { class: 'link', onclick: () => { S.filter = { month: S.month, cat: c.name }; S.view = 'tx'; render(); } }, `See or change these ${rows.length} transactions`));
-}
-
-function yearsPresent() {
-  return [...new Set(monthsPresent(S.tx).map(m => m.slice(0, 4)))];
-}
-
-function barPath(x, y, w, baseline, r = 4) {
-  const radius = Math.min(r, w / 2, baseline - y);
-  return `M${x},${baseline}V${y + radius}Q${x},${y} ${x + radius},${y}H${x + w - radius}Q${x + w},${y} ${x + w},${y + radius}V${baseline}Z`;
-}
-
-function incomeExpenseChart(m) {
-  const W = Math.max(300, Math.min(main.clientWidth, 1000) - 64);
-  const H = 240, left = 44, top = 12, bottom = 26, baseline = H - bottom;
-  const peak = Math.max(1, ...m.expense, ...m.income);
-  const step = [50000, 100000, 200000, 250000, 500000, 1000000, 2500000].find(s => peak / s <= 4) || 5000000;
-  const ceil = Math.ceil(peak / step) * step;
-  const y = v => baseline - (Math.max(0, v) / ceil) * (baseline - top);
-  const band = (W - left) / 12;
-  const barW = Math.min(14, (band - 8) / 2);
-  const svg = svgEl('svg', { viewBox: `0 0 ${W} ${H}`, width: W, height: H, role: 'img', 'aria-label': 'Income and expense for each month. The table below has the same numbers.' });
-  for (let v = 0; v <= ceil; v += step) {
-    svg.append(svgEl('line', { x1: left, x2: W, y1: y(v), y2: y(v), class: 'grid' }));
-    const t = svgEl('text', { x: left - 6, y: y(v) + 4, 'text-anchor': 'end', class: 'tick' }); t.textContent = fmtShort(v); svg.append(t);
-  }
-  const tip = h('div', { class: 'chart-tip', hidden: true });
-  MONTH_NAMES.forEach((name, i) => {
-    const cx = left + band * i + band / 2;
-    const inc = m.income[i], exp = m.expense[i];
-    if (inc > 0) svg.append(svgEl('path', { d: barPath(cx - barW - 1, y(inc), barW, baseline), class: 'series-income' }));
-    if (exp > 0) svg.append(svgEl('path', { d: barPath(cx + 1, y(exp), barW, baseline), class: 'series-expense' }));
-    const t = svgEl('text', { x: cx, y: H - 8, 'text-anchor': 'middle', class: 'tick' }); t.textContent = W < 520 ? name[0] : name.slice(0, 3); svg.append(t);
-    const hit = svgEl('rect', { x: left + band * i, y: 0, width: band, height: H, fill: 'transparent' });
-    const show = e => {
-      tip.hidden = false;
-      tip.replaceChildren(h('strong', {}, name), h('div', {}, `Income ${fmt(inc)}`), h('div', {}, `Expense ${fmt(exp)}`), h('div', {}, `Saved ${fmt(inc - exp)}`));
-      const box = svg.getBoundingClientRect();
-      tip.style.left = `${Math.min(cx, W - 150)}px`;
-      tip.style.top = `${Math.max(0, (e.clientY || box.top) - box.top - 40)}px`;
-    };
-    hit.addEventListener('mousemove', show);
-    hit.addEventListener('click', show);
-    hit.addEventListener('mouseleave', () => { tip.hidden = true; });
-    svg.append(hit);
-  });
-  const legend = h('div', { class: 'legend' }, h('span', {}, h('i', { class: 'swatch income' }), 'Income'), h('span', {}, h('i', { class: 'swatch expense' }), 'Expense'));
-  return h('div', { class: 'chart' }, legend, h('div', { class: 'chart-plot' }, svg, tip));
-}
-
-function viewYear() {
-  const years = yearsPresent();
-  if (!years.length) return noData();
-  if (!years.includes(S.year)) S.year = years[years.length - 1];
-  const m = yearMatrix(S.tx, S.year, S.categories);
-  const top = [...m.table].sort((a, b) => b.total - a.total)[0];
-  const openMonth = i => { S.month = `${S.year}-${String(i + 1).padStart(2, '0')}`; S.view = 'report'; render(); };
-  const cell = c => h('td', { class: c ? 'num' : 'num zero' }, c ? fmt(c) : '–');
-  const sum = arr => arr.reduce((a, b) => a + b, 0);
-  const savings = m.income.map((v, i) => v - m.expense[i]);
-  return [
-    h('div', { class: 'row between title' }, h('h1', {}, 'Year view'), select('Year', S.year, [...years].reverse(), v => { S.year = v; render(); }, { id: 'year' })),
-    h('div', { class: 'tiles' },
-      tile('Total spend', fmt(m.spent)), tile('Average per month', fmt(m.active ? Math.round(m.spent / m.active) : 0), `across ${m.active} months`),
-      tile('Top category', top?.total ? top.name : '–', top?.total ? fmt(top.total) : null), tile('Income', fmt(m.earned)), tile('Saved', fmt(m.earned - m.spent))),
-    h('section', { class: 'card' }, h('h2', {}, 'Income and expense'), incomeExpenseChart(m)),
-    h('section', { class: 'card' }, h('h2', {}, 'Category by month'),
-      h('div', { class: 'scroll' }, h('table', { class: 'matrix' },
-        h('thead', {}, h('tr', {}, h('th', {}, 'Category'), MONTH_NAMES.map((n, i) => h('th', { class: 'num' }, h('button', { class: 'link', onclick: () => openMonth(i) }, n.slice(0, 3)))), h('th', { class: 'num' }, 'Total'))),
-        h('tbody', {}, m.table.filter(t => t.total !== 0).map(t => h('tr', {}, h('th', {}, t.name), t.months.map(cell), h('td', { class: 'num strong' }, fmt(t.total))))),
-        h('tfoot', {},
-          h('tr', {}, h('th', {}, 'Total expense'), m.expense.map(cell), h('td', { class: 'num strong' }, fmt(m.spent))),
-          h('tr', {}, h('th', {}, 'Income'), m.income.map(cell), h('td', { class: 'num strong' }, fmt(m.earned))),
-          h('tr', {}, h('th', {}, 'Saved'), savings.map(cell), h('td', { class: 'num strong' }, fmt(sum(savings)))))))),
-  ];
-}
-
 /* ---------- Transactions ---------- */
 
 const txCtx = {
@@ -647,6 +507,12 @@ const txCtx = {
   categories: () => S.categories,
   addCategory: async name => { await saveCategories({ ...S.categories, [name]: [] }); },
   addSub: async (cat, sub) => { await saveCategories({ ...S.categories, [cat]: [...(S.categories[cat] || []), sub] }); },
+  async rename(row, next) {
+    applyRename(row, next);
+    // A half-finished category change on this row must not be saved along with the new wording.
+    await store.putTx([{ ...row, ...S.drafts.get(row.id) }]);
+    toast('Description saved.');
+  },
   beforeChange(row) {
     if (!S.drafts.has(row.id)) S.drafts.set(row.id, { kind: row.kind, cat: row.cat, sub: row.sub, needsReview: row.needsReview, edited: row.edited });
   },
@@ -686,10 +552,10 @@ function filteredTx() {
   const f = S.filter;
   const q = (f.q || '').toLowerCase();
   return S.tx.filter(r =>
-    (!f.month || monthOf(r) === f.month)
+    (!f.month || r.date.startsWith(f.month))
     && (!f.account || r.account === f.account)
     && (!f.cat || (r.cat || UNCATEGORIZED) === f.cat)
-    && (!q || r.desc.toLowerCase().includes(q) || (r.sub || '').toLowerCase().includes(q))
+    && (!q || r.desc.toLowerCase().includes(q) || (r.origDesc || '').toLowerCase().includes(q) || (r.sub || '').toLowerCase().includes(q))
     && (!f.show || (f.show === 'review' ? r.needsReview : r.kind === f.show)))
     .sort((a, b) => b.date.localeCompare(a.date) || a.desc.localeCompare(b.desc));
 }
@@ -725,14 +591,9 @@ function drawTxList() {
     ...(rows.length ? [] : [h('p', { class: 'muted empty' }, 'Nothing matches.')]));
 }
 
-function localToday() {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-}
-
 function addTransaction() {
   const today = localToday();
-  const month = S.filter.month;
+  const month = S.filter.month?.length === 7 ? S.filter.month : null; // A whole year has no single month to start in.
   const draft = { kind: 'expense', date: month && !today.startsWith(month) ? `${month}-01` : today, desc: '', amount: '', cat: '', sub: '', account: 'Cash' };
   const accounts = [...new Set(['Cash', ...S.tx.map(r => r.account).filter(a => a !== 'Spreadsheet')])];
   const cents = () => parseAmount(draft.amount);
@@ -834,7 +695,7 @@ function viewTx() {
     h('div', { class: 'row between title' }, h('h1', {}, 'Transactions'), h('button', { class: 'primary', id: 'add-tx', onclick: addTransaction }, '+ Add transaction')),
     h('div', { class: 'filters' },
       h('input', { type: 'search', placeholder: 'Search', 'aria-label': 'Search transactions', value: f.q || '', oninput: e => set('q')(e.target.value) }),
-      select('Month', f.month || '', [['', 'All months'], ...months.map(m => [m, monthLabel(m)])], set('month')),
+      select('Month', f.month || '', [['', 'All months'], ...[...new Set(months.map(m => m.slice(0, 4)))].map(y => [y, `All of ${y}`]), ...months.map(m => [m, monthLabel(m)])], set('month')),
       select('Account', f.account || '', [['', 'All accounts'], ...accounts], set('account')),
       select('Category', f.cat || '', [['', 'All categories'], ...Object.keys(S.categories), UNCATEGORIZED], set('cat')),
       select('Show', f.show || '', [['', 'Everything'], ['review', 'Needs a look'], ['expense', 'Expenses'], ['income', 'Income'], ['transfer', 'Not counted']], set('show'))),
@@ -870,7 +731,7 @@ async function restoreBackup(file) {
     if (!await confirmIt('Replace everything on this device?', `The backup has ${data.tx.length} transactions. What is on this device now (${S.tx.length} transactions) will be replaced.`, 'Replace')) return;
     await store.replaceAll(data);
     await loadAll();
-    S.view = 'report';
+    S.view = 'dashboard';
     render();
     toast('Backup restored.');
   } catch (err) {
@@ -923,7 +784,12 @@ function viewData() {
 
 /* ---------- Shell ---------- */
 
-const VIEWS = { report: viewReport, year: viewYear, tx: viewTx, import: viewImport, data: viewData };
+const dashboardActions = {
+  render: () => render(),
+  goTx: filter => { S.filter = filter; S.view = 'tx'; render(); window.scrollTo(0, 0); },
+  goImport: () => { S.view = 'import'; render(); },
+};
+const VIEWS = { dashboard: () => viewDashboard(S, dashboardActions), tx: viewTx, import: viewImport, data: viewData };
 
 function render() {
   revertDrafts();

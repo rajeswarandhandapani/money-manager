@@ -32,8 +32,67 @@ export function monthChoices(rows, today) {
   return out;
 }
 
-export function monthSummary(rows, ym) {
-  const inMonth = rows.filter(r => monthOf(r) === ym);
+/** Income and expense for each month in `list`, in the same order. */
+export function monthSeries(rows, list) {
+  const at = new Map(list.map((m, i) => [m, i]));
+  const income = list.map(() => 0);
+  const expense = list.map(() => 0);
+  for (const r of rows) {
+    const i = at.get(monthOf(r));
+    if (i === undefined) continue;
+    if (r.kind === 'expense') expense[i] += r.cents;
+    else if (r.kind === 'income') income[i] -= r.cents;
+  }
+  return { income, expense };
+}
+
+/** Picks the biggest categories across all time, so each keeps its color in every period. */
+export function categoryStack(rows, list, count) {
+  const nameOf = r => r.cat || UNCATEGORIZED;
+  const lifetime = new Map();
+  for (const r of rows) if (r.kind === 'expense') lifetime.set(nameOf(r), (lifetime.get(nameOf(r)) || 0) + r.cents);
+  const names = [...lifetime].filter(([, c]) => c > 0).sort((a, b) => b[1] - a[1]).slice(0, count).map(([n]) => n);
+  const at = new Map(list.map((m, i) => [m, i]));
+  const values = names.map(() => list.map(() => 0));
+  const other = list.map(() => 0);
+  for (const r of rows) {
+    const i = at.get(monthOf(r));
+    if (i === undefined || r.kind !== 'expense') continue;
+    const n = names.indexOf(nameOf(r));
+    if (n >= 0) values[n][i] += r.cents; else other[i] += r.cents;
+  }
+  return { names, values, other };
+}
+
+/** Running spend by day of the month. An unfinished month stops at today. */
+export function spendingPace(rows, ym, today) {
+  const [y, m] = ym.split('-').map(Number);
+  const days = new Date(Date.UTC(y, m, 0)).getUTCDate();
+  const length = today.startsWith(ym) ? +today.slice(8, 10) : days;
+  const perDay = Array(length).fill(0);
+  for (const r of rows) {
+    if (r.kind !== 'expense' || monthOf(r) !== ym) continue;
+    const d = Math.min(+r.date.slice(8, 10), length) - 1;
+    perDay[d] += r.cents;
+  }
+  let sum = 0;
+  return perDay.map(c => (sum += c));
+}
+
+/** Largest spending groups in a period, such as merchants or subcategories. */
+export function topBy(rows, prefix, keyOf, count = 8) {
+  const totals = new Map();
+  for (const r of rows) {
+    if (r.kind !== 'expense' || !r.date.startsWith(prefix)) continue;
+    const key = keyOf(r);
+    if (key) totals.set(key, (totals.get(key) || 0) + r.cents);
+  }
+  return [...totals].filter(([, c]) => c > 0).map(([name, cents]) => ({ name, cents })).sort((a, b) => b.cents - a.cents).slice(0, count);
+}
+
+/** `prefix` is a month ('2026-10') or a whole year ('2026'). */
+export function periodSummary(rows, prefix) {
+  const inMonth = rows.filter(r => r.date.startsWith(prefix));
   const expenses = inMonth.filter(r => r.kind === 'expense');
   const income = inMonth.filter(r => r.kind === 'income');
   const spent = expenses.reduce((s, r) => s + r.cents, 0);
@@ -51,7 +110,7 @@ export function monthSummary(rows, ym) {
     accounts.set(r.account, (accounts.get(r.account) || 0) + r.cents);
   }
   return {
-    ym, spent, earned, saved: earned - spent,
+    spent, earned, saved: earned - spent,
     count: expenses.length,
     review: inMonth.filter(r => r.needsReview).length,
     transfers: inMonth.filter(r => r.kind === 'transfer').length,

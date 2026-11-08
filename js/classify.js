@@ -37,7 +37,10 @@ export function merchantKey(desc) {
   return words.join(' ');
 }
 
-const CARD_PAYMENT = /CRCARDPMT|CREDIT CRD AUTOPAY|CARDMEMBER SERV|CITI AUTOPAY|AUTOMATIC PAYMENT|THANK YOU FOR YOUR PMT|PAYMENT,? THANK YOU|CAPITAL ONE (MOBILE|ONLINE) PMT|AUTOPAY PAYMENT/i;
+/** Always the bank's wording, so a description you reworded still matches next month's export. */
+export const merchantOf = row => merchantKey(row.origDesc || row.desc);
+
+const CARD_PAYMENT =/CRCARDPMT|CREDIT CRD AUTOPAY|CARDMEMBER SERV|CITI AUTOPAY|AUTOMATIC PAYMENT|THANK YOU FOR YOUR PMT|PAYMENT,? THANK YOU|CAPITAL ONE (MOBILE|ONLINE) PMT|AUTOPAY PAYMENT/i;
 
 export function isCardPayment(row) {
   if (/^credit card payments?$/i.test(row.bankCategory || '')) return true;
@@ -58,7 +61,7 @@ const BANK_HINTS = {
 
 /** Adds one transaction to the learned merchant list. A manual choice always wins afterwards. */
 export function learn(rules, row, { manual = false } = {}) {
-  const key = merchantKey(row.desc);
+  const key = merchantOf(row);
   if (!key) return null;
   const rule = rules[key] || (rules[key] = { key, votes: {}, manual: null });
   if (manual) {

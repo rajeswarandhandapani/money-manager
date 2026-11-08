@@ -64,6 +64,16 @@ const rowFor = (page, text) => page.locator('.tx', { hasText: text }).first();
   for (let i = 0; i < 2; i++) assert.equal(await shoes.nth(i).getByLabel('Category', { exact: true }).inputValue(), 'Family');
   step('category and subcategory can be changed before saving, and applied to the same merchant');
 
+  const renamed = page.locator('.tx', { hasText: 'SHOE SHOP' }).nth(1);
+  await renamed.getByRole('button', { name: 'Edit description' }).click();
+  const descInput = page.getByLabel('New description');
+  const descSave = page.locator('.desc-edit').getByRole('button', { name: 'Save', exact: true });
+  await descInput.fill('Returned school shoes');
+  await descSave.click();
+  await page.waitForSelector('.tx strong:has-text("Returned school shoes")');
+  assert.match(await rowFor(page, 'Returned school shoes').textContent(), /originally: SHOE SHOP DOWNTOWN/);
+  step('a description can be edited during import, and the original is kept');
+
   await rowFor(page, 'CORNER RENT').getByLabel('Type').selectOption('transfer');
   await rowFor(page, 'CORNER RENT').getByLabel('Type').selectOption('expense');
   await rowFor(page, 'CORNER RENT').getByLabel('Category', { exact: true }).selectOption('HousingUtilities');
@@ -98,6 +108,37 @@ const rowFor = (page, text) => page.locator('.tx', { hasText: text }).first();
   assert.equal(await kpi('spent'), '$1,219.43');
   step('data survives a reload');
 
+  await page.waitForSelector('.dash .chart-plot svg');
+  assert.equal(await page.locator('nav button').count(), 4);
+  assert.equal(await page.locator('.dash .chart').count(), 3);
+  for (const title of ['Income and expense, last 12 months', 'Where the money went over time', 'Spending pace through the month', 'By category', 'By account', 'Top merchants', 'Top subcategories']) {
+    assert.equal(await page.getByRole('heading', { name: title }).count(), 1, title);
+  }
+  await page.locator('.dash .chart-plot svg rect[fill=transparent]').nth(11).hover();
+  await page.waitForSelector('.chart-tip:not([hidden])');
+  assert.match(await page.locator('.chart-tip:not([hidden])').textContent(), /October 2026.*Income \$3,000\.00.*Expense \$1,219\.43.*Saved \$1,780\.57/);
+  step('the dashboard is the landing page, with charts and hover details');
+
+  await page.click('.seg [data-scope=year]');
+  await page.waitForSelector('#year');
+  await page.waitForSelector('.matrix .link');
+  await page.waitForSelector('.dash .chart-plot svg');
+  assert.equal(await kpi('spent'), '$1,219.43');
+  assert.equal(await page.getByRole('heading', { name: 'Saved each month' }).count(), 1);
+  await page.locator('.matrix thead').getByRole('button', { name: 'Oct', exact: true }).click();
+  await page.waitForSelector('#month');
+  assert.equal(await page.inputValue('#month'), '2026-10');
+  step('Year view is a switch on the dashboard, and a month in its table opens that month');
+
+  await page.locator('.bar-row', { hasText: 'Family' }).click();
+  await page.getByRole('button', { name: /See or change these/ }).click();
+  await page.waitForSelector('#tx-list .tx');
+  assert.equal(await page.getByLabel('Month', { exact: true }).inputValue(), '2026-10');
+  assert.equal(await page.getByLabel('Category', { exact: true }).first().inputValue(), 'Family');
+  await page.click('nav [data-view=dashboard]');
+  await page.waitForSelector('#kpi-spent');
+  step('a category on the dashboard drills into its transactions');
+
   await nav('tx');
   await page.waitForSelector('#tx-list .tx');
   await rowFor(page, 'CORNER RENT').getByLabel('Subcategory').selectOption('Internet');
@@ -108,6 +149,31 @@ const rowFor = (page, text) => page.locator('.tx', { hasText: text }).first();
   await page.waitForSelector('#tx-list .tx');
   assert.equal(await rowFor(page, 'CORNER RENT').getByLabel('Subcategory').inputValue(), 'Internet');
   step('saved transactions can be recategorized later');
+
+  assert.equal(await page.locator('.tx strong:has-text("Returned school shoes")').count(), 1);
+
+  const corner = () => rowFor(page, 'CORNER RENT');
+  await corner().getByRole('button', { name: 'Edit description' }).click();
+  await descInput.fill('Cancelled wording');
+  await page.keyboard.press('Escape');
+  assert.equal(await page.locator('.tx strong:has-text("Cancelled wording")').count(), 0);
+  await corner().getByRole('button', { name: 'Edit description' }).click();
+  await descInput.fill('   ');
+  await descSave.click();
+  assert.equal(await descInput.count(), 1);
+  await descInput.fill('Apartment rent');
+  await page.keyboard.press('Enter');
+  await page.waitForSelector('.tx strong:has-text("Apartment rent")');
+  await page.waitForTimeout(150);
+  await page.reload();
+  await page.waitForSelector('#kpi-spent');
+  await nav('tx');
+  await page.waitForSelector('#tx-list .tx');
+  assert.equal(await page.locator('.tx strong:has-text("Apartment rent")').count(), 1);
+  await page.getByLabel('Search transactions').fill('corner rent');
+  await page.waitForSelector('.tx strong:has-text("Apartment rent")');
+  await page.getByLabel('Search transactions').fill('');
+  step('a saved description can be edited, cancelled, can\'t be blank, and search finds the original');
 
   await rowFor(page, 'CORNER RENT').getByLabel('Category', { exact: true }).selectOption('Food');
   assert.match(await rowFor(page, 'CORNER RENT').textContent(), /Choose a subcategory to save/);
@@ -251,12 +317,16 @@ const rowFor = (page, text) => page.locator('.tx', { hasText: text }).first();
   step('works with no internet');
 
   await page.setViewportSize({ width: 360, height: 740 });
-  for (const v of ['report', 'year', 'tx', 'import', 'data']) {
+  for (const v of ['dashboard', 'tx', 'import', 'data']) {
     await nav(v);
-    await page.waitForTimeout(80);
+    await page.waitForTimeout(150);
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth - innerWidth);
     assert.ok(overflow <= 0, `${v} overflows by ${overflow}px on a phone`);
   }
+  await nav('dashboard');
+  await page.click('.seg [data-scope=year]');
+  await page.waitForTimeout(150);
+  assert.ok(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth) <= 0, 'year view overflows on a phone');
   step('no sideways scrolling at phone width');
 
   assert.deepEqual(errors, []);
