@@ -1,0 +1,16 @@
+{
+  "name": "money-manager",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Private monthly expense reports from bank exports. All data stays on the device.",
+  "type": "module",
+  "scripts": {
+    "start": "node scripts/serve.cjs",
+    "test": "node --test tests/*.test.mjs",
+    "test:browser": "node tests/browser.cjs",
+    "icons": "node scripts/make-icons.cjs"
+  },
+  "devDependencies": {
+    "playwright": "1.63.0"
+  }
+}
