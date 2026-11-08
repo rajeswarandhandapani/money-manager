@@ -67,6 +67,7 @@ nav button:hover { color: var(--ink); }
 nav button[aria-current] { background: var(--accent-soft); color: var(--ink); font-weight: 600; }
 
 main { max-width: 1040px; margin: 0 auto; padding: 20px; }
+main.wide { max-width: none; }
 .muted { color: var(--ink-2); font-size: .9rem; }
 .small-text { font-size: .8rem; }
 .num, .tx-amt, .bar-value, .tile b { font-variant-numeric: tabular-nums; }

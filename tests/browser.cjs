@@ -327,6 +327,15 @@ const rowFor = (page, text) => page.locator('.tx', { hasText: text }).first();
   await page.click('.seg [data-scope=year]');
   await page.waitForTimeout(150);
   assert.ok(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth) <= 0, 'year view overflows on a phone');
+
+  await page.setViewportSize({ width: 1900, height: 900 });
+  const mainWidth = () => page.evaluate(() => document.querySelector('main').getBoundingClientRect().width);
+  assert.equal(await mainWidth(), 1900);
+  await nav('tx');
+  assert.equal(await mainWidth(), 1040);
+  await nav('dashboard');
+  await page.setViewportSize({ width: 360, height: 740 });
+  step('the Dashboard uses the full width, and other pages stay at reading width');
   step('no sideways scrolling at phone width');
 
   assert.deepEqual(errors, []);

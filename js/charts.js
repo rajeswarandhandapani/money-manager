@@ -88,7 +88,7 @@ export function groupedBars({ labels, full, series, selected = -1, onPick, foote
   const chart = columnPlot({
     labels, full, selected, onPick, peak,
     drawColumn(svg, i, cx, band, y, baseline) {
-      const w = Math.min(14, (band - 6) / series.length - 1);
+      const w = Math.min(24, (band - 6) / series.length - 1);
       series.forEach((s, n) => {
         const v = s.values[i];
         if (v <= 0) return;
@@ -107,7 +107,7 @@ export function stackedBars({ labels, full, series, selected = -1, onPick }) {
   const chart = columnPlot({
     labels, full, selected, onPick, peak: Math.max(1, ...totals),
     drawColumn(svg, i, cx, band, y, baseline) {
-      const w = Math.min(26, band - 8);
+      const w = Math.min(48, band - 8);
       const shown = series.filter(s => s.values[i] > 0);
       let sum = 0;
       shown.forEach((s, n) => {
@@ -141,7 +141,7 @@ export function divergingBars({ labels, full, values, selected = -1, onPick, hei
     const span = max - min || step;
     const y = v => top + ((max - v) / span) * (floor - top);
     const band = (W - left) / labels.length;
-    const w = Math.min(22, band - 8);
+    const w = Math.min(48, band - 8);
     const svg = svgEl('svg', { width: W, height: H, viewBox: `0 0 ${W} ${H}` });
     if (selected >= 0) svg.append(svgEl('rect', { x: left + band * selected, y: top - 6, width: band, height: floor - top + 6, rx: 4, class: 'band' }));
     for (let v = min; v <= max; v += step) {

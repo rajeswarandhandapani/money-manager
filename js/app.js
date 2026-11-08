@@ -793,6 +793,7 @@ const VIEWS = { dashboard: () => viewDashboard(S, dashboardActions), tx: viewTx,
 
 function render() {
   revertDrafts();
+  main.classList.toggle('wide', S.view === 'dashboard');
   main.replaceChildren(...VIEWS[S.view]().flat().filter(Boolean));
   document.querySelectorAll('nav button').forEach(b => {
     if (b.dataset.view === S.view) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current');
