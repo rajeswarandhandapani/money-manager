@@ -46,7 +46,16 @@ export async function exportAll() {
   return data;
 }
 
-export const eraseAll = () => run(['tx', 'kv'], 'readwrite', t => { t.objectStore('tx').clear(); t.objectStore('kv').clear(); });
+/** Clears every record. This device's lock stays, so erasing or restoring can't remove it. */
+export const eraseAll = () => run(['tx', 'kv'], 'readwrite', t => {
+  t.objectStore('tx').clear();
+  const kv = t.objectStore('kv');
+  const lock = kv.get('lock');
+  lock.onsuccess = () => {
+    kv.clear();
+    if (lock.result) kv.put(lock.result, 'lock');
+  };
+});
 
 export async function replaceAll(data) {
   await eraseAll();

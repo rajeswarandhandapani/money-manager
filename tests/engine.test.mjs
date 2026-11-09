@@ -5,6 +5,18 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { readExport, parseAmount, parseDate, dateOrder, parseCsv, looksFlipped, guessMapping, normalizeRows } from '../js/parse.js';
 import { classifyAll, learn, suggest, merchantKey, applyAmount, buildSplit, merchantOf, DEFAULT_CATEGORIES as CATS } from '../js/classify.js';
 import { periodSummary, yearMatrix, previousMonth, missingCards, monthChoices, monthSeries, categoryStack, spendingPace, topBy, typicalMonthly, budgetSummary, monthlySavings } from '../js/report.js';
+import { newRecoveryCode, hashCode } from '../js/lock.js';
+
+test('recovery codes are readable, differ each time, and match however they are typed', async () => {
+  const code = newRecoveryCode();
+  assert.match(code, /^([A-HJ-NP-Z2-9]{4}-){4}[A-HJ-NP-Z2-9]{4}$/);
+  assert.notEqual(newRecoveryCode(), code);
+  const salt = new Uint8Array(16).fill(7);
+  const hash = await hashCode(code, salt);
+  assert.equal(await hashCode(` ${code.toLowerCase().replaceAll('-', ' ')} `, salt), hash);
+  assert.notEqual(await hashCode(newRecoveryCode(), salt), hash);
+  assert.notEqual(await hashCode(code, new Uint8Array(16).fill(8)), hash);
+});
 
 const CHECKING = `Transaction Date,Transaction Description,Amount,Category
 2026-10-30,CHASE CREDIT CRD AUTOPAY ACH DEBIT xxxxxxxxxxx0001,- $100.5,Credit Card Payments

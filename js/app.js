@@ -6,6 +6,7 @@ import { viewDashboard } from './dashboard.js';
 import { h, select, fmt, localToday } from './ui.js';
 import * as store from './store.js';
 import { migrateData, pinMixedStores, TAXONOMY } from './migrate.js';
+import * as lock from './lock.js';
 
 const prettyDate = iso => `${MONTH_NAMES[+iso.slice(5, 7) - 1].slice(0, 3)} ${+iso.slice(8)}, ${iso.slice(0, 4)}`;
 
@@ -954,8 +955,58 @@ function unusedCategories() {
       h('button', { class: 'ghost small', 'aria-label': `Remove ${name}`, onclick: () => removeCategory(name) }, 'Remove'))));
 }
 
+const showRecoveryCode = code => dialog(close => {
+  const copy = h('button', { class: 'ghost', onclick: async () => {
+    try { await navigator.clipboard.writeText(code); copy.textContent = 'Copied'; } catch { copy.textContent = 'Copy failed. Write it down.'; }
+  } }, 'Copy');
+  return h('div', { class: 'stack' },
+    h('h2', {}, 'Save your recovery code'),
+    h('p', {}, 'If your passkey ever stops working, this code gets you back in on this device. It won’t be shown again.'),
+    h('code', { class: 'recovery-code', id: 'recovery-code' }, code),
+    h('div', { class: 'row end' }, h('button', { class: 'ghost', onclick: () => close(false) }, 'Cancel'), copy, h('button', { class: 'primary', id: 'lock-confirm', onclick: () => close(true) }, 'I saved it')));
+});
+
+async function turnOnLock() {
+  let credentialId;
+  try {
+    credentialId = await lock.createPasskey();
+  } catch {
+    return toast('The lock was not turned on.');
+  }
+  const code = lock.newRecoveryCode();
+  if (await showRecoveryCode(code)) {
+    await lock.turnOn(credentialId, code);
+    toast('Lock turned on.');
+  } else {
+    toast('The lock was not turned on.');
+  }
+  render();
+}
+
+async function turnOffLock() {
+  try {
+    await lock.turnOff();
+  } catch {
+    return toast('The lock is still on.');
+  }
+  render();
+  toast('Lock turned off.');
+}
+
+function lockCard() {
+  const on = lock.isOn();
+  return h('section', { class: 'card stack', id: 'lock-card' }, h('h2', {}, 'App lock'),
+    h('p', {}, on
+      ? `On for this device. It asks for Face ID, a fingerprint or your device passcode when the app opens, and after ${lock.LOCK_AFTER_MINUTES} minutes away.`
+      : 'Ask for Face ID, a fingerprint or your device passcode before showing your data. This is set separately on each device.'),
+    h('p', { class: 'muted' }, 'The lock keeps people out of the app. It doesn’t encrypt the data stored on this device.'),
+    on ? h('button', { class: 'ghost', id: 'lock-off', onclick: turnOffLock }, 'Turn off lock')
+      : lock.isSupported() ? h('button', { class: 'primary', id: 'lock-on', onclick: turnOnLock }, 'Turn on lock')
+        : h('p', { class: 'muted' }, 'This browser or device can’t use a passkey lock.'));
+}
+
 function viewData() {
-  const restore = h('input', { type: 'file', hidden: true, accept: '.backup,application/octet-stream,*/*', onchange: e => { if (e.target.files[0]) restoreBackup(e.target.files[0]); e.target.value = ''; } });
+  const restore =h('input', { type: 'file', hidden: true, accept: '.backup,application/octet-stream,*/*', onchange: e => { if (e.target.files[0]) restoreBackup(e.target.files[0]); e.target.value = ''; } });
   const install = window.__installPrompt && h('button', { class: 'primary', onclick: async () => { window.__installPrompt.prompt(); window.__installPrompt = null; render(); } }, 'Install this app');
   return [
     h('h1', {}, 'Data'),
@@ -963,6 +1014,7 @@ function viewData() {
       h('p', {}, 'Your data lives only in this browser. A backup is an encrypted file you can keep in OneDrive and open on your phone.'),
       h('div', { class: 'row' }, h('button', { class: 'primary', onclick: makeBackup }, 'Save backup'), h('button', { class: 'ghost', onclick: () => restore.click() }, 'Restore backup'), restore),
       install),
+    lockCard(),
     h('section', { class: 'card stack' }, h('h2', {}, 'Import history'),
       S.batches.length ? S.batches.map(b => h('div', { class: 'row between line' },
         h('div', {}, h('div', {}, b.files.join(', ')), h('span', { class: 'muted' }, `${prettyDate(b.at.slice(0, 10))} · ${S.tx.filter(r => r.batch === b.id).length} transactions`)),
@@ -1126,12 +1178,14 @@ window.addEventListener('drop', e => {
   e.preventDefault();
   dragDepth = 0;
   document.body.classList.remove('dragging');
-  addFiles(e.dataTransfer.files);
+  if (!lock.isLocked()) addFiles(e.dataTransfer.files);
 });
 window.addEventListener('beforeinstallprompt', e => { e.preventDefault(); window.__installPrompt = e; if (S.view === 'data') render(); });
 
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 
+await lock.init();
+await lock.untilUnlocked(); // Nothing is read from storage until this passes.
 await loadAll();
 if (!S.tx.length) S.view = 'import';
 render();

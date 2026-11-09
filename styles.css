@@ -61,6 +61,15 @@ p { margin: 0 0 6px; }
 button, input, select { font: inherit; color: inherit; }
 [hidden] { display: none !important; }
 
+body.locked > :not(#lock) { display: none !important; }
+#lock { min-height: 100dvh; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 24px 16px; text-align: center; }
+#lock img { border-radius: 16px; }
+#lock h1 { margin: 0 0 8px; }
+#lock form { width: min(320px, 100%); }
+.lock-button { min-width: 200px; min-height: 48px; }
+.lock-message { min-height: 1.4em; color: var(--danger); }
+.recovery-code { display: block; padding: 12px; border-radius: 8px; background: var(--bg); text-align: center; font-size: 1.05rem; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; user-select: all; }
+
 .top { position: sticky; top: 0; z-index: 10; background: var(--bg); border-bottom: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; padding: 8px 20px; padding-top: calc(8px + env(safe-area-inset-top)); }
 .brand { font-weight: 700; }
 nav { display: flex; gap: 4px; }

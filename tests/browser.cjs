@@ -503,6 +503,104 @@ const rowFor = (page, text) => page.locator('.tx', { hasText: text }).first();
   step('the Dashboard uses the full width, and other pages stay at reading width');
   step('no sideways scrolling at phone width');
 
+  // A simulated passkey device stands in for Face ID, which a test browser doesn't have.
+  const lockContext = await browser.newContext({ viewport: { width: 390, height: 800 } });
+  const lp = await lockContext.newPage();
+  lp.on('pageerror', e => errors.push(e.message));
+  lp.on('console', m => { if (m.type() === 'error' && !/Failed to load resource/.test(m.text())) errors.push(m.text()); });
+  const cdp = await lockContext.newCDPSession(lp);
+  await cdp.send('WebAuthn.enable');
+  const { authenticatorId } = await cdp.send('WebAuthn.addVirtualAuthenticator', { options: { protocol: 'ctap2', transport: 'internal', hasResidentKey: true, hasUserVerification: true, isUserVerified: true, automaticPresenceSimulation: true } });
+  const faceMatches = isUserVerified => cdp.send('WebAuthn.setUserVerified', { authenticatorId, isUserVerified });
+  const storeCall = (fn, ...args) => lp.evaluate(async ([name, list]) => (await import('/js/store.js'))[name](...list), [fn, args]);
+  const seedRow = { id: 'Manual|lock', account: 'Cash', accountType: 'cash', date: '2026-10-05', desc: 'PRIVATE ROW', cents: 1234, kind: 'expense', cat: 'Food', sub: 'Groceries', needsReview: false, edited: true };
+  const awayFor = minutes => lp.evaluate(m => {
+    Object.defineProperty(document, 'hidden', { get: () => true, configurable: true });
+    document.dispatchEvent(new Event('visibilitychange'));
+    const realNow = Date.now;
+    Date.now = () => realNow() + m * 60000;
+    Object.defineProperty(document, 'hidden', { get: () => false, configurable: true });
+    document.dispatchEvent(new Event('visibilitychange'));
+    Date.now = realNow;
+  }, minutes);
+  const appShowing = () => lp.locator('#main').isVisible();
+
+  await lp.goto(URL);
+  await storeCall('putTx', [seedRow]);
+  await lp.reload();
+  await lp.click('nav [data-view=data]');
+  await lp.click('#lock-on');
+  const code = await lp.locator('#recovery-code').textContent();
+  assert.match(code, /^([A-Z2-9]{4}-){4}[A-Z2-9]{4}$/);
+  await lp.getByRole('button', { name: 'Cancel' }).click();
+  await lp.waitForSelector('#lock-on');
+  await lp.click('#lock-on');
+  const savedCode = await lp.locator('#recovery-code').textContent();
+  assert.notEqual(savedCode, code);
+  await lp.click('#lock-confirm');
+  await lp.waitForSelector('#lock-off');
+  step('the lock turns on only after the recovery code is confirmed');
+
+  assert.equal('lock' in await storeCall('exportAll'), false);
+  step('a backup leaves out this device\'s lock');
+
+  await lp.reload();
+  await lp.waitForSelector('#unlock');
+  assert.equal(await appShowing(), false);
+  assert.equal(await lp.locator('#main').textContent(), '');
+  assert.equal(await lp.locator('header').isVisible(), false);
+  await faceMatches(false);
+  await lp.click('#unlock');
+  await lp.locator('.lock-message', { hasText: 'try again' }).waitFor();
+  assert.equal(await lp.locator('#main').textContent(), '');
+  await faceMatches(true);
+  await lp.click('#unlock');
+  await lp.waitForSelector('#main .dash, #main h1');
+  await lp.click('nav [data-view=tx]');
+  await lp.locator('.tx', { hasText: 'PRIVATE ROW' }).waitFor();
+  step('nothing is loaded until the person is confirmed');
+
+  await awayFor(2);
+  assert.equal(await lp.locator('#lock').count(), 0);
+  await awayFor(4);
+  await lp.waitForSelector('#unlock');
+  assert.equal(await appShowing(), false);
+  await lp.click('#unlock');
+  await lp.waitForSelector('#lock', { state: 'detached' });
+  assert.equal(await appShowing(), true);
+  await lp.locator('.tx', { hasText: 'PRIVATE ROW' }).waitFor();
+  step('the app locks again after 3 minutes away and keeps its place');
+
+  await lp.reload();
+  await lp.getByRole('button', { name: 'Use recovery code' }).click();
+  await lp.getByLabel('Recovery code').fill('AAAA-BBBB-CCCC-DDDD-EEEE');
+  await lp.getByRole('button', { name: 'Unlock with code' }).click();
+  await lp.locator('.lock-message', { hasText: 'doesn’t match' }).waitFor();
+  await lp.getByLabel('Recovery code').fill(savedCode.toLowerCase().replaceAll('-', ''));
+  await lp.getByRole('button', { name: 'Unlock with code' }).click();
+  await lp.waitForSelector('#lock', { state: 'detached' });
+  step('the recovery code gets in, typed in any case, and a wrong one doesn\'t');
+
+  await storeCall('eraseAll');
+  assert.ok((await storeCall('getKv', 'lock')).credentialId);
+  step('erasing data leaves the lock on');
+
+  await lp.reload();
+  await lp.click('#unlock');
+  await lp.waitForSelector('#lock', { state: 'detached' });
+  await lp.click('nav [data-view=data]');
+  await faceMatches(false);
+  await lp.click('#lock-off');
+  await lp.locator('#toast', { hasText: 'still on' }).waitFor();
+  await faceMatches(true);
+  await lp.click('#lock-off');
+  await lp.waitForSelector('#lock-on');
+  await lp.reload();
+  await lp.waitForSelector('#main h1');
+  assert.equal(await lp.locator('#lock').count(), 0);
+  step('turning the lock off needs the same check');
+  await lockContext.close();
+
   assert.deepEqual(errors, []);
   assert.deepEqual(external, []);
   step('no console errors and no requests to any other site');
