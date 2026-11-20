@@ -67,19 +67,19 @@ Classic GitHub Pages does not support Git submodules, so files are mirrored into
 
 **One-time setup (already done):** imported this repo into `rajeswarandhandapani.github.io` as a squashed subtree:
 
-```bash
+```powershell
 cd c:\prorajes\repos\rajeswarandhandapani.github.io
-git subtree add --prefix=money-manager git@github.com:rajeswarandhandapani/money-manager.git main --squash
+git subtree add --prefix=money-manager git@github.com:rajeswarandhandapani/money-manager.git main --squash -m "Add money-manager ($(Get-Date -Format 'yyyy-MM-dd HH:mm'))"
 git push origin master
 ```
 
 **Syncing future updates** (after pushing new commits to `money-manager`):
 
-```bash
+```powershell
 cd c:\prorajes\repos\rajeswarandhandapani.github.io
-git subtree pull --prefix=money-manager git@github.com:rajeswarandhandapani/money-manager.git main --squash
+git subtree pull --prefix=money-manager git@github.com:rajeswarandhandapani/money-manager.git main --squash -m "Sync money-manager ($(Get-Date -Format 'yyyy-MM-dd HH:mm'))"
 git push origin master
 ```
 
-`--squash` keeps `money-manager`'s full commit history out of the website repo's log—only one squashed commit lands per sync.
+`--squash` keeps `money-manager`'s full commit history out of the website repo's log—only one squashed commit lands per sync. Passing `-m` avoids opening Vim (in Git Bash, macOS, or Linux, swap `$(Get-Date -Format 'yyyy-MM-dd HH:mm')` with `$(date '+%Y-%m-%d %H:%M')`).
 
