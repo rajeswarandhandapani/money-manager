@@ -52,7 +52,34 @@ npm run test:browser
 Tests use made-up transactions. `.gitignore` blocks `.csv`, `.xlsx` and `.backup` files, so real
 financial data can't be committed by accident.
 
-## Hosting
+## Hosting & Deploying to GitHub Pages
 
 Any static host works. All paths are relative, so it can live in a subfolder of GitHub Pages.
 The page's Content Security Policy only allows requests to its own site.
+
+For standalone GitHub Pages, push this repo to GitHub and enable **Settings → Pages → Deploy from branch `main` (root folder)**.
+
+### Deploying to `rajeswarandhandapani.com/money-manager/` with `git subtree`
+
+Classic GitHub Pages does not support Git submodules, so files are mirrored into `rajeswarandhandapani.github.io` using `git subtree`.
+
+**Before pushing changes**, ensure any new JS/icon files are listed in `sw.js` (`FILES`) and bump `CACHE` if cached assets changed (`npm run test:browser` checks `sw.js` coverage).
+
+**One-time setup (already done):** imported this repo into `rajeswarandhandapani.github.io` as a squashed subtree:
+
+```bash
+cd c:\prorajes\repos\rajeswarandhandapani.github.io
+git subtree add --prefix=money-manager git@github.com:rajeswarandhandapani/money-manager.git main --squash
+git push origin master
+```
+
+**Syncing future updates** (after pushing new commits to `money-manager`):
+
+```bash
+cd c:\prorajes\repos\rajeswarandhandapani.github.io
+git subtree pull --prefix=money-manager git@github.com:rajeswarandhandapani/money-manager.git main --squash
+git push origin master
+```
+
+`--squash` keeps `money-manager`'s full commit history out of the website repo's log—only one squashed commit lands per sync.
+
