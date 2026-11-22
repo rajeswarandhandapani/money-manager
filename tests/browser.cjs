@@ -3,10 +3,13 @@ const { chromium } = require('playwright');
 const assert = require('assert/strict');
 const fs = require('fs');
 const path = require('path');
-const { start } = require('../scripts/serve.cjs');
+const { start } = require('../scripts/serve-dist.cjs');
 
 const PORT = 4182;
 const URL = `http://localhost:${PORT}/`;
+const DIST_ROOT = path.join(__dirname, '..', 'dist', 'money-manager', 'browser');
+const OUT = path.join(__dirname, '..', 'test-output');
+fs.mkdirSync(OUT, { recursive: true });
 const file = (name, text) => ({ name, mimeType: 'text/csv', buffer: Buffer.from(text) });
 
 const CHECKING = file('accountActivityExport.csv', `Transaction Date,Transaction Description,Amount,Category
@@ -37,11 +40,17 @@ const EXTRA = file('Chase1234_December.csv', `Transaction Date,Post Date,Descrip
 const rowFor = (page, text) => page.locator('.tx', { hasText: text }).first();
 
 (async () => {
-  const sw = fs.readFileSync(path.join(__dirname, '..', 'sw.js'), 'utf8');
-  for (const f of fs.readdirSync(path.join(__dirname, '..', 'js'))) assert.ok(sw.includes(`./js/${f}`), `${f} missing from sw.js`);
+  assert.ok(fs.existsSync(path.join(DIST_ROOT, 'ngsw-worker.js')), 'ngsw-worker.js missing from dist');
+  assert.ok(fs.existsSync(path.join(DIST_ROOT, 'ngsw.json')), 'ngsw.json missing from dist');
+  const manifest = JSON.parse(fs.readFileSync(path.join(DIST_ROOT, 'manifest.webmanifest'), 'utf8'));
+  for (const icon of manifest.icons) {
+    assert.ok(fs.existsSync(path.join(DIST_ROOT, icon.src)), `${icon.src} missing from dist`);
+  }
 
   const server = await start(PORT);
-  const browser = await chromium.launch();
+  const browser = await chromium.launch()
+    .catch(() => chromium.launch({ channel: 'chrome' }))
+    .catch(() => chromium.launch({ channel: 'msedge' }));
   const context = await browser.newContext({ viewport: { width: 1100, height: 800 }, acceptDownloads: true });
   const page = await context.newPage();
   const errors = [];
@@ -49,7 +58,8 @@ const rowFor = (page, text) => page.locator('.tx', { hasText: text }).first();
   page.on('pageerror', e => errors.push(e.message));
   page.on('console', m => { if (m.type() === 'error' && !/ERR_INTERNET_DISCONNECTED|Failed to load resource/.test(m.text())) errors.push(m.text()); });
   page.on('request', r => { if (!/^(http:\/\/localhost|blob:|data:)/.test(r.url())) external.push(r.url()); });
-  const nav = v => page.click(`nav [data-view=${v}]`);
+  const NAV_LABELS = { dashboard: 'Dashboard', tx: 'Transactions', import: 'Import', data: 'Data' };
+  const nav = v => page.locator('nav button', { hasText: NAV_LABELS[v] }).click();
   const kpi = id => page.locator(`#kpi-${id} b`).textContent();
   const step = name => console.log(`  ok  ${name}`);
 
@@ -66,6 +76,7 @@ const rowFor = (page, text) => page.locator('.tx', { hasText: text }).first();
   await rowFor(page, 'SHOE SHOP').getByLabel('Subcategory').selectOption('Furniture');
   await page.getByRole('button', { name: 'Apply to 1 other' }).click();
   const shoes = page.locator('.tx', { hasText: 'SHOE SHOP' });
+  await page.waitForFunction(() => [...document.querySelectorAll('.tx')].filter(el => el.textContent.includes('SHOE SHOP')).every(el => el.querySelector('select[aria-label="Category"]')?.value === 'Household'));
   for (let i = 0; i < 2; i++) assert.equal(await shoes.nth(i).getByLabel('Category', { exact: true }).inputValue(), 'Household');
   step('category and subcategory can be changed before saving, and applied to the same merchant');
 
@@ -85,20 +96,22 @@ const rowFor = (page, text) => page.locator('.tx', { hasText: text }).first();
   await rowFor(page, 'CORNER RENT').getByLabel('Subcategory').selectOption('Rent');
   const del = text => rowFor(page, text).getByRole('button', { name: /^Delete/ }).click();
   await del('DELETE ME STORE');
-  assert.equal(await page.locator('.tx', { hasText: 'DELETE ME STORE' }).count(), 0);
+  await page.locator('.tx', { hasText: 'DELETE ME STORE' }).waitFor({ state: 'detached' });
   await page.getByRole('button', { name: 'Undo' }).click();
   await page.waitForSelector('.tx:has-text("DELETE ME STORE")');
   await page.click('[data-tab=all]');
   await page.waitForSelector('.tx:has-text("DELETE ME STORE")');
   await del('DELETE ME STORE');
-  assert.equal(await page.locator('.tx', { hasText: 'DELETE ME STORE' }).count(), 0);
+  await page.locator('.tx', { hasText: 'DELETE ME STORE' }).waitFor({ state: 'detached' });
   step('a row can be deleted during import, and the delete undone');
 
   assert.equal(await page.locator('#save-import').isDisabled(), true);
   await rowFor(page, '<img').getByLabel('Category', { exact: true }).selectOption('Household');
+  await rowFor(page, '<img').getByText('Choose a subcategory to save').waitFor();
   assert.equal(await page.locator('#save-import').isDisabled(), true);
   assert.match(await rowFor(page, '<img').textContent(), /Choose a subcategory to save/);
   await rowFor(page, '<img').getByLabel('Subcategory').selectOption('Furniture');
+  await page.locator('#save-import:not([disabled])').waitFor();
   assert.equal(await page.locator('#save-import').isDisabled(), false);
   step('saving is blocked until every expense has a category and subcategory');
 
@@ -140,7 +153,7 @@ const rowFor = (page, text) => page.locator('.tx', { hasText: text }).first();
   await page.waitForSelector('#tx-list .tx');
   assert.equal(await page.getByLabel('Month', { exact: true }).inputValue(), '2026-10');
   assert.equal(await page.getByLabel('Category', { exact: true }).first().inputValue(), 'Household');
-  await page.click('nav [data-view=dashboard]');
+  await nav('dashboard');
   await page.waitForSelector('#kpi-spent');
   step('a category on the dashboard drills into its transactions');
 
@@ -148,10 +161,10 @@ const rowFor = (page, text) => page.locator('.tx', { hasText: text }).first();
   await page.click('#edit-budgets');
   const budgetInput = name => page.getByLabel(`Budget for ${name}`, { exact: true });
   await budgetInput('Household').fill('-5');
-  assert.equal(await page.locator('#budgets-save').isDisabled(), true);
+  await page.locator('#budgets-save[disabled]').waitFor();
   await budgetInput('Household').fill('50');
   await budgetInput('Housing').fill('1000');
-  assert.match(await page.locator('#budget-total').textContent(), /Total \$1,050\.00 a month/);
+  await page.locator('#budget-total', { hasText: 'Total $1,050.00 a month' }).waitFor();
   await page.click('#budgets-save');
   await page.waitForSelector('#kpi-budget');
   assert.match(await page.locator('#kpi-budget').textContent(), /Over budget\$169\.43of \$1,050\.00 · 1 over/);
@@ -175,8 +188,6 @@ const rowFor = (page, text) => page.locator('.tx', { hasText: text }).first();
   await rowFor(page, 'CORNER RENT').getByLabel('Subcategory').selectOption('Internet');
   await page.waitForTimeout(150);
   await page.reload();
-  await page.waitForSelector('#kpi-spent');
-  await nav('tx');
   await page.waitForSelector('#tx-list .tx');
   assert.equal(await rowFor(page, 'CORNER RENT').getByLabel('Subcategory').inputValue(), 'Internet');
   step('saved transactions can be recategorized later');
@@ -187,18 +198,18 @@ const rowFor = (page, text) => page.locator('.tx', { hasText: text }).first();
   await corner().getByRole('button', { name: 'Edit description' }).click();
   await descInput.fill('Cancelled wording');
   await page.keyboard.press('Escape');
+  await page.locator('.desc-edit').waitFor({ state: 'detached' });
   assert.equal(await page.locator('.tx strong:has-text("Cancelled wording")').count(), 0);
   await corner().getByRole('button', { name: 'Edit description' }).click();
   await descInput.fill('   ');
   await descSave.click();
+  await page.waitForTimeout(50);
   assert.equal(await descInput.count(), 1);
   await descInput.fill('Apartment rent');
   await page.keyboard.press('Enter');
   await page.waitForSelector('.tx strong:has-text("Apartment rent")');
   await page.waitForTimeout(150);
   await page.reload();
-  await page.waitForSelector('#kpi-spent');
-  await nav('tx');
   await page.waitForSelector('#tx-list .tx');
   assert.equal(await page.locator('.tx strong:has-text("Apartment rent")').count(), 1);
   await page.getByLabel('Search transactions').fill('corner rent');
@@ -207,11 +218,10 @@ const rowFor = (page, text) => page.locator('.tx', { hasText: text }).first();
   step('a saved description can be edited, cancelled, can\'t be blank, and search finds the original');
 
   await rowFor(page, 'CORNER RENT').getByLabel('Category', { exact: true }).selectOption('Food');
+  await rowFor(page, 'CORNER RENT').getByText('Choose a subcategory to save').waitFor();
   assert.match(await rowFor(page, 'CORNER RENT').textContent(), /Choose a subcategory to save/);
   await page.waitForTimeout(150);
   await page.reload();
-  await page.waitForSelector('#kpi-spent');
-  await nav('tx');
   await page.waitForSelector('#tx-list .tx');
   assert.equal(await rowFor(page, 'CORNER RENT').getByLabel('Category', { exact: true }).inputValue(), 'Housing');
   step('a category with no subcategory is not saved on the Transactions screen');
@@ -222,6 +232,8 @@ const rowFor = (page, text) => page.locator('.tx', { hasText: text }).first();
   await rowFor(page, '<img').getByRole('button', { name: /^Delete/ }).click();
   await page.waitForTimeout(150);
   await page.reload();
+  await page.waitForSelector('#tx-list');
+  await nav('dashboard');
   await page.waitForSelector('#kpi-spent');
   assert.equal(await kpi('spent'), '$1,218.43');
   step('a saved transaction can be deleted, and the delete undone');
@@ -269,8 +281,10 @@ const rowFor = (page, text) => page.locator('.tx', { hasText: text }).first();
   await nav('data');
   const downloadP = page.waitForEvent('download', { timeout: 30000 });
   await page.getByRole('button', { name: 'Save backup' }).click();
+  await page.locator('dialog h3', { hasText: 'Encrypt backup' }).waitFor();
   await page.locator('dialog input').fill('correct horse');
   await page.getByRole('button', { name: 'Continue' }).click();
+  await page.locator('dialog h3', { hasText: 'Confirm passphrase' }).waitFor();
   await page.locator('dialog input').fill('correct horse');
   await page.getByRole('button', { name: 'Save backup' }).last().click();
   const download = await downloadP;
@@ -295,6 +309,7 @@ const rowFor = (page, text) => page.locator('.tx', { hasText: text }).first();
   await page.locator('dialog').getByRole('button', { name: 'Replace' }).click();
   await page.waitForSelector('#kpi-spent');
   await page.selectOption('#month', '2026-10');
+  await page.waitForFunction(() => document.querySelector('#kpi-spent b')?.textContent === '$1,218.43');
   assert.equal(await kpi('spent'), '$1,218.43');
   assert.match(await page.locator('#kpi-budget').textContent(), /\$168\.43/);
   step('backup restores, and a wrong passphrase is refused');
@@ -316,8 +331,10 @@ const rowFor = (page, text) => page.locator('.tx', { hasText: text }).first();
   await box.getByLabel('Description').fill('Cash at farmers market');
   await box.getByLabel('Amount').fill('23.40');
   await box.getByLabel('Category', { exact: true }).selectOption('Food');
+  await page.waitForTimeout(50);
   assert.equal(await addButton.isDisabled(), true);
   await box.getByLabel('Subcategory').selectOption('Snacks & Ice Cream');
+  await page.locator('#add-confirm:not([disabled])').waitFor();
   await addButton.click();
   await page.waitForSelector('#tx-list .tx:has-text("Cash at farmers market")');
   assert.equal(await page.getByLabel('Month', { exact: true }).inputValue(), '2026-07');
@@ -327,12 +344,16 @@ const rowFor = (page, text) => page.locator('.tx', { hasText: text }).first();
   await box.getByLabel('Type').selectOption('income');
   await box.getByLabel('Description').fill('Side job');
   await box.getByLabel('Amount').fill('-5');
+  await page.waitForTimeout(50);
   assert.equal(await addButton.isDisabled(), true);
   await box.getByLabel('Amount').fill('100');
+  await page.locator('#add-confirm:not([disabled])').waitFor();
   await addButton.click();
   await page.waitForSelector('#tx-list .tx:has-text("Side job")');
   await page.waitForTimeout(150);
   await page.reload();
+  await page.waitForSelector('#tx-list');
+  await nav('dashboard');
   await page.waitForSelector('#kpi-spent');
   await page.selectOption('#month', '2026-07');
   assert.equal(await kpi('spent'), '$23.40');
@@ -342,10 +363,13 @@ const rowFor = (page, text) => page.locator('.tx', { hasText: text }).first();
   await nav('tx');
   await page.waitForSelector('#tx-list .tx');
   await rowFor(page, 'Cash at farmers market').getByLabel('Type').selectOption('savings');
+  await rowFor(page, 'Cash at farmers market').getByLabel('Savings subcategory').waitFor();
   assert.equal(await rowFor(page, 'Cash at farmers market').getByLabel('Savings subcategory').inputValue(), 'India Remittance');
   await page.waitForTimeout(150);
   await nav('dashboard');
+  await page.waitForSelector('#month');
   await page.selectOption('#month', '2026-07');
+  await page.waitForFunction(() => document.querySelector('#kpi-spent b')?.textContent === '$0.00');
   assert.equal(await kpi('spent'), '$0.00');
   assert.equal(await kpi('saved'), '$100.00');
   assert.match(await page.locator('#kpi-saved').textContent(), /includes \$23\.40 in Savings/);
@@ -382,9 +406,11 @@ const rowFor = (page, text) => page.locator('.tx', { hasText: text }).first();
   await rowFor(page, 'AMOUNT FIX').getByRole('button', { name: 'Edit amount' }).click();
   await amountInput.fill('0');
   await amountSave.click();
+  await page.waitForTimeout(50);
   assert.equal(await amountInput.count(), 1);
   await amountInput.fill('25');
   await amountSave.click();
+  await rowFor(page, 'AMOUNT FIX').getByText('original amount: $20.00').waitFor();
   assert.match(await rowFor(page, 'AMOUNT FIX').textContent(), /\$25\.00.*original amount: \$20\.00|original amount: \$20\.00.*\$25\.00/);
   await rowFor(page, 'AMOUNT FIX').getByLabel('Category', { exact: true }).selectOption('Household');
   await rowFor(page, 'AMOUNT FIX').getByLabel('Subcategory').selectOption('Furniture');
@@ -398,22 +424,27 @@ const rowFor = (page, text) => page.locator('.tx', { hasText: text }).first();
   await part(1, 'category').selectOption('Food');
   await part(1, 'subcategory').selectOption('Snacks & Ice Cream');
   await part(2, 'amount').fill('30');
+  await page.locator('#split-summary', { hasText: '$10.00 left' }).waitFor();
   assert.match(await splitSummary(), /\$10\.00 left/);
   await part(2, 'category').selectOption('Household');
   await part(2, 'subcategory').selectOption('Furniture');
   assert.equal(await splitSave.isDisabled(), true);
   await part(2, 'amount').fill('50');
+  await page.locator('#split-summary', { hasText: '$10.00 too much' }).waitFor();
   assert.match(await splitSummary(), /\$10\.00 too much/);
   assert.equal(await splitSave.isDisabled(), true);
   await part(2, 'amount').fill('');
   await page.getByRole('button', { name: 'Put the rest in the last part' }).click();
+  await page.locator('#split-summary', { hasText: 'fully assigned' }).waitFor();
   assert.equal(await part(2, 'amount').inputValue(), '40.00');
   assert.match(await splitSummary(), /fully assigned/);
   await part(2, 'description').fill('Household part');
+  await page.locator('#split-save:not([disabled])').waitFor();
   await splitSave.click();
   await page.waitForSelector('.tx strong:has-text("Household part")');
   assert.match(await rowFor(page, 'Household part').textContent(), /originally: SPLIT STORE.*part 2 of a \$100\.00 transaction/);
   assert.match(await page.locator('.savebar').textContent(), /\$125\.00 spending/);
+  await page.locator('#save-import:not([disabled])').waitFor();
   await page.click('#save-import');
   await page.waitForSelector('#kpi-spent');
   assert.equal(await kpi('spent'), '$125.00');
@@ -426,6 +457,8 @@ const rowFor = (page, text) => page.locator('.tx', { hasText: text }).first();
   await page.keyboard.press('Enter');
   await page.waitForFunction(() => document.querySelector('#toast').textContent.includes('Amount saved'));
   await page.reload();
+  await page.waitForSelector('#tx-list');
+  await nav('dashboard');
   await page.waitForSelector('#kpi-spent');
   assert.equal(await kpi('spent'), '$130.00');
   step('a saved amount can be edited, and the totals follow');
@@ -449,6 +482,7 @@ const rowFor = (page, text) => page.locator('.tx', { hasText: text }).first();
   assert.match(await rowFor(page, 'Household part').textContent(), /\$30\.00/);
   await rowFor(page, 'Household part').getByRole('button', { name: 'Undo split' }).click();
   await page.waitForFunction(() => document.querySelector('#toast').textContent.includes('Split undone'));
+  await page.locator('.tx strong:has-text("Household part")').waitFor({ state: 'detached' });
   assert.equal(await page.locator('.tx strong:has-text("Household part")').count(), 0);
   assert.match(await rowFor(page, 'SPLIT STORE').textContent(), /\$100\.00/);
   await rowFor(page, 'SPLIT STORE').getByRole('button', { name: 'Split', exact: true }).click();
@@ -466,12 +500,14 @@ const rowFor = (page, text) => page.locator('.tx', { hasText: text }).first();
   assert.equal(await page.getByRole('button', { name: 'Remove Housing', exact: true }).count(), 0);
   assert.equal(await page.getByRole('button', { name: 'Remove Savings', exact: true }).count(), 0);
   await page.reload();
-  await page.waitForSelector('#kpi-spent');
+  await page.waitForSelector('#lock-card');
   await nav('tx');
   await page.waitForSelector('#tx-list .tx');
-  assert.equal(await page.locator('option', { hasText: /^Vacation$/ }).count(), 0);
+  assert.equal(await page.locator('option', { hasText: /^Vacation & Travel$/ }).count(), 0);
   step('an unused category can be removed, and categories in use cannot');
 
+  await nav('dashboard');
+  await page.waitForSelector('#kpi-spent');
   await page.evaluate(() => navigator.serviceWorker.ready);
   await page.reload();
   await page.waitForSelector('nav');
@@ -481,30 +517,53 @@ const rowFor = (page, text) => page.locator('.tx', { hasText: text }).first();
   await context.setOffline(false);
   step('works with no internet');
 
+  await page.screenshot({ path: path.join(OUT, 'dashboard.png'), fullPage: true });
+  await nav('tx');
+  await page.waitForSelector('#tx-list');
+  await page.screenshot({ path: path.join(OUT, 'transactions.png'), fullPage: true });
+  await nav('dashboard');
+  await page.waitForSelector('#kpi-spent');
+
   await page.setViewportSize({ width: 360, height: 740 });
   for (const v of ['dashboard', 'tx', 'import', 'data']) {
     await nav(v);
-    await page.waitForTimeout(150);
+    await page.waitForTimeout(200);
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth - innerWidth);
     assert.ok(overflow <= 0, `${v} overflows by ${overflow}px on a phone`);
   }
   await nav('dashboard');
+  await page.waitForSelector('.seg [data-scope=year]');
   await page.click('.seg [data-scope=year]');
+  await page.waitForSelector('#year');
   await page.waitForTimeout(150);
   assert.ok(await page.evaluate(() => document.documentElement.scrollWidth - innerWidth) <= 0, 'year view overflows on a phone');
 
   await page.setViewportSize({ width: 1900, height: 900 });
+  await page.waitForSelector('mm-dashboard-page');
   const mainWidth = () => page.evaluate(() => document.querySelector('main').getBoundingClientRect().width);
   assert.equal(await mainWidth(), 1900);
   await nav('tx');
+  await page.waitForSelector('#tx-list');
   assert.equal(await mainWidth(), 1040);
   await nav('dashboard');
   await page.setViewportSize({ width: 360, height: 740 });
   step('the Dashboard uses the full width, and other pages stay at reading width');
   step('no sideways scrolling at phone width');
 
+  // Theme switcher check
+  await nav('data');
+  await page.getByLabel('Color theme').selectOption('dark');
+  assert.equal(await page.evaluate(() => document.documentElement.getAttribute('data-theme')), 'dark');
+  await nav('dashboard');
+  await page.waitForSelector('#kpi-spent');
+  await page.setViewportSize({ width: 1100, height: 800 });
+  await page.screenshot({ path: path.join(OUT, 'dashboard-dark.png'), fullPage: true });
+  await nav('data');
+  await page.getByLabel('Color theme').selectOption('system');
+  step('DaisyUI theme switcher updates live and restores system');
+
   // A simulated passkey device stands in for Face ID, which a test browser doesn't have.
-  const lockContext = await browser.newContext({ viewport: { width: 390, height: 800 } });
+  const lockContext = await browser.newContext({ viewport: { width: 390, height: 800 }, acceptDownloads: true });
   const lp = await lockContext.newPage();
   lp.on('pageerror', e => errors.push(e.message));
   lp.on('console', m => { if (m.type() === 'error' && !/Failed to load resource/.test(m.text())) errors.push(m.text()); });
@@ -512,7 +571,38 @@ const rowFor = (page, text) => page.locator('.tx', { hasText: text }).first();
   await cdp.send('WebAuthn.enable');
   const { authenticatorId } = await cdp.send('WebAuthn.addVirtualAuthenticator', { options: { protocol: 'ctap2', transport: 'internal', hasResidentKey: true, hasUserVerification: true, isUserVerified: true, automaticPresenceSimulation: true } });
   const faceMatches = isUserVerified => cdp.send('WebAuthn.setUserVerified', { authenticatorId, isUserVerified });
-  const storeCall = (fn, ...args) => lp.evaluate(async ([name, list]) => (await import('/js/store.js'))[name](...list), [fn, args]);
+  const idbPutTx = row => lp.evaluate(async r => {
+    await new Promise((resolve, reject) => {
+      const req = indexedDB.open('monthly-expense', 1);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains('tx')) db.createObjectStore('tx', { keyPath: 'id' });
+        if (!db.objectStoreNames.contains('kv')) db.createObjectStore('kv');
+      };
+      req.onsuccess = () => {
+        const db = req.result;
+        const tx = db.transaction('tx', 'readwrite');
+        tx.objectStore('tx').put(r);
+        tx.oncomplete = () => { db.close(); resolve(); };
+        tx.onerror = () => reject(tx.error);
+      };
+      req.onerror = () => reject(req.error);
+    });
+  }, row);
+  const idbGetKv = key => lp.evaluate(async k => {
+    return new Promise((resolve, reject) => {
+      const req = indexedDB.open('monthly-expense', 1);
+      req.onsuccess = () => {
+        const db = req.result;
+        const tx = db.transaction('kv', 'readonly');
+        const g = tx.objectStore('kv').get(k);
+        g.onsuccess = () => { db.close(); resolve(g.result); };
+        g.onerror = () => reject(g.error);
+      };
+      req.onerror = () => reject(req.error);
+    });
+  }, key);
+  const lpNav = v => lp.locator('nav button', { hasText: NAV_LABELS[v] }).click();
   const seedRow = { id: 'Manual|lock', account: 'Cash', accountType: 'cash', date: '2026-10-05', desc: 'PRIVATE ROW', cents: 1234, kind: 'expense', cat: 'Food', sub: 'Groceries', needsReview: false, edited: true };
   const awayFor = minutes => lp.evaluate(m => {
     Object.defineProperty(document, 'hidden', { get: () => true, configurable: true });
@@ -526,9 +616,9 @@ const rowFor = (page, text) => page.locator('.tx', { hasText: text }).first();
   const appShowing = () => lp.locator('#main').isVisible();
 
   await lp.goto(URL);
-  await storeCall('putTx', [seedRow]);
+  await idbPutTx(seedRow);
   await lp.reload();
-  await lp.click('nav [data-view=data]');
+  await lpNav('data');
   await lp.click('#lock-on');
   const code = await lp.locator('#recovery-code').textContent();
   assert.match(code, /^([A-Z2-9]{4}-){4}[A-Z2-9]{4}$/);
@@ -541,7 +631,20 @@ const rowFor = (page, text) => page.locator('.tx', { hasText: text }).first();
   await lp.waitForSelector('#lock-off');
   step('the lock turns on only after the recovery code is confirmed');
 
-  assert.equal('lock' in await storeCall('exportAll'), false);
+  // Verify encrypted backup does not leak credentialId / lock record.
+  const dlP = lp.waitForEvent('download', { timeout: 30000 });
+  await lp.getByRole('button', { name: 'Save backup' }).click();
+  await lp.locator('dialog h3', { hasText: 'Encrypt backup' }).waitFor();
+  await lp.locator('dialog input').fill('lock test pass');
+  await lp.getByRole('button', { name: 'Continue' }).click();
+  await lp.locator('dialog h3', { hasText: 'Confirm passphrase' }).waitFor();
+  await lp.locator('dialog input').fill('lock test pass');
+  await lp.getByRole('button', { name: 'Save backup' }).last().click();
+  const lockBackupDl = await dlP;
+  const lockBackupPath = path.join(fs.mkdtempSync(path.join(require('os').tmpdir(), 'me-lock-')), 'lock.backup');
+  await lockBackupDl.saveAs(lockBackupPath);
+  const lockBackupJson = fs.readFileSync(lockBackupPath, 'utf8');
+  assert.ok(!lockBackupJson.includes('credentialId'));
   step('a backup leaves out this device\'s lock');
 
   await lp.reload();
@@ -556,7 +659,7 @@ const rowFor = (page, text) => page.locator('.tx', { hasText: text }).first();
   await faceMatches(true);
   await lp.click('#unlock');
   await lp.waitForSelector('#main .dash, #main h1');
-  await lp.click('nav [data-view=tx]');
+  await lpNav('tx');
   await lp.locator('.tx', { hasText: 'PRIVATE ROW' }).waitFor();
   step('nothing is loaded until the person is confirmed');
 
@@ -581,14 +684,17 @@ const rowFor = (page, text) => page.locator('.tx', { hasText: text }).first();
   await lp.waitForSelector('#lock', { state: 'detached' });
   step('the recovery code gets in, typed in any case, and a wrong one doesn\'t');
 
-  await storeCall('eraseAll');
-  assert.ok((await storeCall('getKv', 'lock')).credentialId);
+  await lpNav('data');
+  await lp.getByRole('button', { name: 'Erase all data on this device' }).click();
+  await lp.locator('dialog').getByRole('button', { name: 'Erase' }).click();
+  await lp.waitForSelector('#drop');
+  assert.ok((await idbGetKv('lock')).credentialId);
   step('erasing data leaves the lock on');
 
   await lp.reload();
   await lp.click('#unlock');
   await lp.waitForSelector('#lock', { state: 'detached' });
-  await lp.click('nav [data-view=data]');
+  await lpNav('data');
   await faceMatches(false);
   await lp.click('#lock-off');
   await lp.locator('#toast', { hasText: 'still on' }).waitFor();
@@ -600,6 +706,135 @@ const rowFor = (page, text) => page.locator('.tx', { hasText: text }).first();
   assert.equal(await lp.locator('#lock').count(), 0);
   step('turning the lock off needs the same check');
   await lockContext.close();
+
+  // Legacy v1 IndexedDB + Pre-v3 Taxonomy + Encrypted Backup Compatibility Test
+  const v1Ctx = await browser.newContext({ viewport: { width: 1100, height: 800 } });
+  const v1Page = await v1Ctx.newPage();
+  v1Page.on('pageerror', e => errors.push(e.message));
+  v1Page.on('console', m => { if (m.type() === 'error' && !/Failed to load resource/.test(m.text())) errors.push(m.text()); });
+  await v1Page.goto(URL);
+  await v1Page.evaluate(async () => {
+    await new Promise((resolve, reject) => {
+      const req = indexedDB.open('monthly-expense', 1);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains('tx')) db.createObjectStore('tx', { keyPath: 'id' });
+        if (!db.objectStoreNames.contains('kv')) db.createObjectStore('kv');
+      };
+      req.onsuccess = () => {
+        const db = req.result;
+        const tx = db.transaction(['tx', 'kv'], 'readwrite');
+        const txStore = tx.objectStore('tx');
+        txStore.clear();
+        txStore.put({
+          id: 'v1-fam-1',
+          account: 'Chase Credit Card',
+          accountType: 'card',
+          date: '2026-09-14',
+          desc: 'TARGET SUPPLIES',
+          cents: 4520,
+          bankCategory: 'Shopping',
+          bankType: 'Sale',
+          kind: 'expense',
+          cat: 'Family',
+          sub: 'Consumables',
+          needsReview: false,
+          edited: true,
+        });
+        txStore.put({
+          id: 'v1-din-1',
+          account: 'Chase Credit Card',
+          accountType: 'card',
+          date: '2026-09-18',
+          desc: 'APARTMENT CO',
+          cents: 6000,
+          bankCategory: 'Bills',
+          bankType: 'Sale',
+          kind: 'expense',
+          cat: 'HousingUtilities',
+          sub: 'HomeRent',
+          needsReview: false,
+          edited: true,
+        });
+        txStore.put({
+          id: 'v1-inc-1',
+          account: 'PNC Checking',
+          accountType: 'checking',
+          date: '2026-09-01',
+          desc: 'EMPLOYER PAYROLL',
+          cents: -400000,
+          bankCategory: 'Income',
+          bankType: 'Credit',
+          kind: 'income',
+          cat: '',
+          sub: 'Salary',
+          needsReview: false,
+          edited: false,
+        });
+        const kv = tx.objectStore('kv');
+        kv.clear();
+        kv.put(1, 'taxonomy');
+        kv.put({ Family: ['Consumables'], HousingUtilities: ['HomeRent'] }, 'categories');
+        kv.put({ Family: 30000, HousingUtilities: 20000 }, 'budgets');
+        kv.put({
+          'TARGET SUPPLIES': {
+            key: 'TARGET SUPPLIES',
+            votes: {},
+            manual: { kind: 'expense', cat: 'Family', sub: 'Consumables', rowId: 'v1-fam-1' },
+          },
+        }, 'rules');
+        tx.oncomplete = () => { db.close(); resolve(); };
+        tx.onerror = () => reject(tx.error);
+      };
+      req.onerror = () => reject(req.error);
+    });
+  });
+
+  await v1Page.reload();
+  await v1Page.waitForSelector('#kpi-spent');
+  assert.equal(await v1Page.locator('#kpi-spent b').textContent(), '$105.20');
+  assert.equal(await v1Page.locator('#kpi-income b').textContent(), '$4,000.00');
+  const upgraded = await v1Page.evaluate(async () => {
+    return new Promise((resolve, reject) => {
+      const req = indexedDB.open('monthly-expense', 1);
+      req.onsuccess = () => {
+        const db = req.result;
+        const tx = db.transaction(['tx', 'kv'], 'readonly');
+        const out = {};
+        tx.objectStore('tx').getAll().onsuccess = e => { out.tx = e.target.result; };
+        tx.objectStore('kv').get('taxonomy').onsuccess = e => { out.taxonomy = e.target.result; };
+        tx.objectStore('kv').get('beforeTaxonomy2').onsuccess = e => { out.snapshot = e.target.result; };
+        tx.objectStore('kv').get('budgets').onsuccess = e => { out.budgets = e.target.result; };
+        tx.objectStore('kv').get('rules').onsuccess = e => { out.rules = e.target.result; };
+        tx.oncomplete = () => { db.close(); resolve(out); };
+        tx.onerror = () => reject(tx.error);
+      };
+    });
+  });
+  assert.equal(upgraded.taxonomy, 3);
+  assert.ok(upgraded.snapshot && upgraded.snapshot.tx.length === 3, 'beforeTaxonomy2 rollback snapshot kept');
+  const famRow = upgraded.tx.find(r => r.id === 'v1-fam-1');
+  const houseRow = upgraded.tx.find(r => r.id === 'v1-din-1');
+  assert.equal(famRow.cat, 'Household');
+  assert.equal(famRow.sub, 'Supplies');
+  assert.equal(houseRow.cat, 'Housing');
+  assert.equal(houseRow.sub, 'Rent');
+  assert.equal(upgraded.budgets.Household, 30000);
+  assert.equal(upgraded.budgets.Housing, 20000);
+  assert.equal(upgraded.rules['TARGET SUPPLIES'].manual.cat, 'Household');
+
+  // Verify encrypted backup created cleanly restores in migrated app too.
+  await v1Page.locator('nav button', { hasText: 'Data' }).click();
+  await v1Page.locator('input[type=file]').setInputFiles(backupPath);
+  await v1Page.locator('dialog input').fill('correct horse');
+  await v1Page.getByRole('button', { name: 'Continue' }).click();
+  await v1Page.locator('dialog').getByRole('button', { name: 'Replace' }).click();
+  await v1Page.waitForSelector('#kpi-spent');
+  await v1Page.selectOption('#month', '2026-10');
+  await v1Page.waitForFunction(() => document.querySelector('#kpi-spent b')?.textContent === '$1,218.43');
+  assert.equal(await v1Page.locator('#kpi-spent b').textContent(), '$1,218.43');
+  step('legacy v1 IndexedDB data, pre-v3 taxonomy, budgets, rules, and encrypted backups migrate seamlessly');
+  await v1Ctx.close();
 
   assert.deepEqual(errors, []);
   assert.deepEqual(external, []);

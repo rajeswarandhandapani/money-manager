@@ -37,7 +37,7 @@ const ICONS = [
   for (const icon of ICONS) {
     const p = await browser.newPage({ viewport: { width: icon.size, height: icon.size } });
     await p.setContent(svg(icon.size, { dollar: true, ...icon }));
-    await p.screenshot({ path: path.join(__dirname, '..', 'icons', `${icon.name}.png`), omitBackground: icon.rounded });
+    await p.screenshot({ path: path.join(__dirname, '..', 'public', 'icons', `${icon.name}.png`), omitBackground: icon.rounded });
     await p.close();
   }
   await browser.close();

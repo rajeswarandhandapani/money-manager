@@ -1,0 +1,230 @@
+/* Shared Tailwind v4 + DaisyUI v5 theme base, layout containers, calendar cells, timer bar, toast, and SVG chart primitives. */
+
+@import "tailwindcss";
+@plugin "daisyui" {
+  themes: nord --default, dim --prefersdark, light, dark, corporate, emerald, winter, sunset;
+}
+
+:root {
+  --grid: color-mix(in oklab, var(--color-base-content) 14%, transparent);
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--color-base-200);
+  color: var(--color-base-content);
+  padding-bottom: calc(130px + env(safe-area-inset-bottom));
+}
+
+[hidden] {
+  display: none !important;
+}
+
+.app-header {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  background: var(--color-base-100);
+  border-bottom: 1px solid var(--color-base-300);
+  padding-top: env(safe-area-inset-top);
+}
+
+.app-header-inner {
+  max-width: 680px;
+  margin: 0 auto;
+  padding: 8px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.app-main {
+  max-width: 680px;
+  margin: 0 auto;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.cell {
+  aspect-ratio: 1;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0.45rem;
+  background: var(--color-base-300);
+  color: color-mix(in oklab, var(--color-base-content) 70%, transparent);
+  font-size: .78rem;
+  font-weight: 700;
+  display: grid;
+  place-items: center;
+  position: relative;
+  cursor: pointer;
+  overflow: hidden;
+}
+
+.cell:disabled {
+  cursor: default;
+  opacity: .55;
+}
+
+.cell[data-s=full] {
+  background: var(--color-success);
+  color: var(--color-success-content);
+}
+
+.cell.is-today {
+  box-shadow: 0 0 0 2px var(--color-base-200), 0 0 0 4px var(--color-base-content);
+}
+
+.cell.selected {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+.chart-plot {
+  position: relative;
+  width: 100%;
+}
+
+.chart-plot svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.axis {
+  fill: color-mix(in oklab, var(--color-base-content) 68%, transparent);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.strong-tick {
+  fill: var(--color-base-content);
+  font-weight: 600;
+}
+
+.grid {
+  stroke: var(--grid);
+  stroke-width: 1;
+}
+
+.goal-line {
+  stroke: color-mix(in oklab, var(--color-base-content) 60%, transparent);
+  stroke-width: 1.5;
+  stroke-dasharray: 4 4;
+}
+
+.crosshair {
+  stroke: color-mix(in oklab, var(--color-base-content) 45%, transparent);
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+}
+
+.chart-tip {
+  position: absolute;
+  pointer-events: none;
+  background: var(--color-base-100);
+  color: var(--color-base-content);
+  border: 1px solid var(--color-base-300);
+  border-radius: 0.5rem;
+  padding: 6px 10px;
+  font-size: .82rem;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, .14);
+  z-index: 15;
+  white-space: nowrap;
+}
+
+.timer-bar {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: calc(12px + env(safe-area-inset-bottom));
+  width: min(calc(100% - 24px), 520px);
+  background: var(--color-base-100);
+  color: var(--color-base-content);
+  border: 1px solid var(--color-base-300);
+  border-radius: 0.875rem;
+  padding: 10px 14px 14px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, .2);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  z-index: 30;
+}
+
+.timer-bar > span {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: .92rem;
+  opacity: .78;
+}
+
+.timer-bar > b {
+  font-size: 1.2rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.timer-track {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: 5px;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--color-base-300);
+  overflow: hidden;
+}
+
+.timer-track > i {
+  display: block;
+  height: 100%;
+  background: var(--color-primary);
+}
+
+#toast {
+  position: fixed;
+  left: 50%;
+  bottom: calc(76px + env(safe-area-inset-bottom));
+  transform: translate(-50%, 16px);
+  background: var(--color-neutral);
+  color: var(--color-neutral-content);
+  padding: 10px 14px;
+  border-radius: 0.625rem;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: min(92vw, 480px);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity .18s ease, transform .18s ease;
+  z-index: 40;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, .22);
+}
+
+#toast.show {
+  opacity: 1;
+  transform: translate(-50%, 0);
+  pointer-events: auto;
+}
+
+@media (max-width: 440px) {
+  .app-header-inner {
+    padding: 8px 10px;
+    flex-wrap: wrap;
+    row-gap: 4px;
+  }
+  .app-nav {
+    width: 100%;
+    justify-content: space-between;
+  }
+}

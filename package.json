@@ -1,16 +1,40 @@
 {
   "name": "money-manager",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "private": true,
-  "description": "Private monthly expense reports from bank exports. All data stays on the device.",
-  "type": "module",
+  "description": "Private monthly expense reports from bank exports. Built with Angular, Tailwind CSS, DaisyUI, and IndexedDB.",
+  "packageManager": "npm@11.16.0",
   "scripts": {
-    "start": "node scripts/serve.cjs",
-    "test": "node --test tests/*.test.mjs",
+    "ng": "ng",
+    "start": "ng serve --port 4182",
+    "build": "ng build --configuration production --base-href ./",
+    "build:pages": "ng build --configuration production --base-href /money-manager/",
+    "watch": "ng build --watch --configuration development",
+    "test": "node --import ./tests/ts-resolve.mjs --test tests/*.test.mjs",
     "test:browser": "node tests/browser.cjs",
     "icons": "node scripts/make-icons.cjs"
   },
+  "dependencies": {
+    "@angular/common": "^22.3.0",
+    "@angular/compiler": "^22.3.0",
+    "@angular/core": "^22.3.0",
+    "@angular/forms": "^22.3.0",
+    "@angular/platform-browser": "^22.3.0",
+    "@angular/router": "^22.3.0",
+    "@angular/service-worker": "^22.3.0",
+    "rxjs": "~7.8.0",
+    "tslib": "^2.3.0"
+  },
   "devDependencies": {
-    "playwright": "1.63.0"
+    "@angular/build": "^22.3.0",
+    "@angular/cli": "^22.3.0",
+    "@angular/compiler-cli": "^22.3.0",
+    "@tailwindcss/postcss": "latest",
+    "daisyui": "latest",
+    "playwright": "1.63.0",
+    "postcss": "latest",
+    "prettier": "^3.8.1",
+    "tailwindcss": "latest",
+    "typescript": "~6.0.2"
   }
 }
