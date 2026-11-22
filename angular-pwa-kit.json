@@ -1,0 +1,24 @@
+{
+  "kitVersion": "1.0.0",
+  "app": "money-manager",
+  "name": "Money Manager",
+  "port": 4182,
+  "target": "src/app/kit",
+  "modules": [
+    "theme.css",
+    "dates.ts",
+    "ics.ts",
+    "idb.ts",
+    "storage-utils.ts",
+    "chart-kit.ts",
+    "theme.service.ts",
+    "toast.service.ts",
+    "toast.component.ts",
+    "confirm-dialog.service.ts",
+    "confirm-dialog.component.ts",
+    "timer.service.ts",
+    "timer-bar.component.ts",
+    "app-shell.component.ts"
+  ],
+  "syncedAt": "2026-11-22"
+}

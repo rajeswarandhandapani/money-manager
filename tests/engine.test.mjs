@@ -2,10 +2,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
-import { readExport, parseAmount, parseDate, dateOrder, parseCsv, looksFlipped, guessMapping, normalizeRows } from '../js/parse.js';
-import { classifyAll, learn, suggest, merchantKey, applyAmount, buildSplit, merchantOf, DEFAULT_CATEGORIES as CATS } from '../js/classify.js';
-import { periodSummary, yearMatrix, previousMonth, missingCards, monthChoices, monthSeries, categoryStack, spendingPace, topBy, typicalMonthly, budgetSummary, monthlySavings } from '../js/report.js';
-import { newRecoveryCode, hashCode } from '../js/lock.js';
+import { readExport, parseAmount, parseDate, dateOrder, parseCsv, looksFlipped, guessMapping, normalizeRows } from '../src/app/domain/parse.ts';
+import { classifyAll, learn, suggest, merchantKey, applyAmount, buildSplit, merchantOf, DEFAULT_CATEGORIES as CATS } from '../src/app/domain/classify.ts';
+import { periodSummary, yearMatrix, previousMonth, missingCards, monthChoices, monthSeries, categoryStack, spendingPace, topBy, typicalMonthly, budgetSummary, monthlySavings } from '../src/app/domain/report.ts';
+import { newRecoveryCode, hashCode } from '../src/app/domain/lock-crypto.ts';
 
 test('recovery codes are readable, differ each time, and match however they are typed', async () => {
   const code = newRecoveryCode();
@@ -84,19 +84,20 @@ test('cash back is income for you to confirm, not a payment or spending', () => 
 test('every icon exists at its declared size and is saved for offline use', () => {
   const root = new URL('../', import.meta.url);
   const pngSize = file => { const b = readFileSync(new URL(file, root)); return [b.readUInt32BE(16), b.readUInt32BE(20)]; };
-  const manifest = JSON.parse(readFileSync(new URL('manifest.webmanifest', root), 'utf8'));
+  const manifest = JSON.parse(readFileSync(new URL('public/manifest.webmanifest', root), 'utf8'));
   for (const icon of manifest.icons) {
     const [w, h] = icon.sizes.split('x').map(Number);
-    assert.deepEqual(pngSize(icon.src), [w, h], icon.src);
+    assert.deepEqual(pngSize(`public/${icon.src}`), [w, h], icon.src);
   }
   for (const size of ['192x192', '512x512']) {
     for (const purpose of ['any', 'maskable']) {
       assert.ok(manifest.icons.some(i => i.sizes === size && i.purpose === purpose), `${size} ${purpose}`);
     }
   }
-  assert.deepEqual(pngSize('icons/apple-touch-icon.png'), [180, 180]);
-  const sw = readFileSync(new URL('sw.js', root), 'utf8');
-  for (const f of readdirSync(new URL('icons/', root))) assert.ok(sw.includes(`./icons/${f}`), `${f} missing from sw.js`);
+  assert.deepEqual(pngSize('public/icons/apple-touch-icon.png'), [180, 180]);
+  const ngsw = readFileSync(new URL('ngsw-config.json', root), 'utf8');
+  assert.ok(ngsw.includes('/icons/*.png'));
+  assert.ok(readdirSync(new URL('public/icons/', root)).length >= 6);
 });
 
 test('amounts in every style the banks use', () => {
@@ -423,7 +424,7 @@ test('report totals exclude transfers and keep years apart', () => {
 });
 
 test('category upgrade moves rows, learned merchants and budgets to the new names', async () => {
-  const { migrateData } = await import('../js/migrate.js');
+  const { migrateData } = await import('../src/app/domain/migrate.ts');
   const row = (id, desc, cat, sub, extra = {}) => ({ id, desc, kind: 'expense', cat, sub, cents: 100, ...extra });
   const out = migrateData({
     tx: [
@@ -462,7 +463,7 @@ test('category upgrade moves rows, learned merchants and budgets to the new name
 });
 
 test('category upgrade leaves already-moved data alone when run twice', async () => {
-  const { migrateData } = await import('../js/migrate.js');
+  const { migrateData } = await import('../src/app/domain/migrate.ts');
   const first = migrateData({ tx: [{ id: 'a', desc: 'X', kind: 'expense', cat: 'Family', sub: 'Consumables', cents: 1 }], rules: {}, categories: CATS, budgets: {} });
   const second = migrateData(first);
   assert.deepEqual(second.tx, first.tx);
@@ -476,7 +477,7 @@ test('every category has a name the new list knows, and there is one Savings hom
 });
 
 test('a choice on one Walmart purchase does not change the other Walmart purchases', async () => {
-  const { pinMixedStores } = await import('../js/migrate.js');
+  const { pinMixedStores } = await import('../src/app/domain/migrate.ts');
   const rules = pinMixedStores({});
   learn(rules, { id: 'a', desc: 'WAL-MART #5040', kind: 'expense', cat: 'Children', sub: 'Toys' }, { manual: true });
   const next = suggest(rules, 'WAL-MART #5088');
@@ -485,7 +486,7 @@ test('a choice on one Walmart purchase does not change the other Walmart purchas
 });
 
 test('income split treats each month of income as 100%', async () => {
-  const { incomeSplit } = await import('../js/report.js');
+  const { incomeSplit } = await import('../src/app/domain/report.ts');
   const row = (date, kind, cents) => ({ date, kind, cents });
   const [normal, over, none] = incomeSplit([
     row('2026-01-05', 'income', -100000), row('2026-01-06', 'expense', 60000), row('2026-01-07', 'savings', 15000),

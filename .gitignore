@@ -1,5 +1,13 @@
+# Compiled output
+/dist
+/tmp
+/out-tsc
+/.angular/cache
+
+# Node & test output
 node_modules/
 test-output/
+npm-debug.log
 
 # Never commit real financial data
 *.csv
@@ -7,3 +15,7 @@ test-output/
 *.qfx
 *.ofx
 *.backup
+
+# System & IDEs
+.DS_Store
+Thumbs.db
